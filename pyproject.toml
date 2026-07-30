@@ -1,0 +1,20 @@
+[project]
+name = "id_app"
+version = "0.1.0"
+description = "A native desktop application built with PySide6."
+requires-python = ">=3.14"
+dependencies = [
+    "PySide6>=6.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
