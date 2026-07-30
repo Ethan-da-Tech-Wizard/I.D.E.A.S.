@@ -1,0 +1,71 @@
+name: Build Windows Release
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.14'
+    - name: Require reviewed offline dependencies
+      shell: pwsh
+      run: |
+        if (!(Test-Path wheelhouse)) {
+          Write-Error "Missing wheelhouse. Release builds require reviewed offline wheels."
+        }
+        if (!(Test-Path requirements-build.txt)) {
+          Write-Error "Missing requirements-build.txt. Release builds require pinned build inputs."
+        }
+        if (!(Test-Path requirements-build.in)) {
+          Write-Error "Missing requirements-build.in. Release pins must be reviewed."
+        }
+    - name: Install dependencies offline
+      run: |
+        python -m pip install --no-index --find-links wheelhouse --require-hashes -r requirements-build.txt
+    - name: Run security audit
+      run: |
+        python scripts/security_audit.py
+    - name: Run dependency policy
+      run: |
+        python scripts/dependency_policy.py
+    - name: Run tests
+      run: |
+        python -m pytest tests -q
+    - name: Generate SBOM
+      run: |
+        python scripts/generate_sbom.py
+    - name: Build executable
+      run: |
+        pyinstaller --name id_app --windowed --onefile --exclude-module PySide6.QtDBus --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtWebView app/main.py
+    - name: Sign executable and SBOM
+      if: github.event_name != 'pull_request'
+      shell: pwsh
+      env:
+        WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+        WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+      run: |
+        if (!$env:WINDOWS_SIGNING_CERT_BASE64) {
+          Write-Error "Missing WINDOWS_SIGNING_CERT_BASE64 secret; refusing unsigned release."
+        }
+        if (!$env:WINDOWS_SIGNING_CERT_PASSWORD) {
+          Write-Error "Missing WINDOWS_SIGNING_CERT_PASSWORD secret; refusing unsigned release."
+        }
+        $certPath = "$env:RUNNER_TEMP\id_app_signing_cert.pfx"
+        [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64))
+        & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $certPath /p $env:WINDOWS_SIGNING_CERT_PASSWORD dist/id_app.exe
+        & signtool verify /pa /v dist/id_app.exe
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: id_app-windows
+        path: |
+          dist/id_app.exe
+          dist/id_app.sbom.json
