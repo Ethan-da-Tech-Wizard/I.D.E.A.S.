@@ -21,11 +21,21 @@ ALLOWED_RELEASE_REQUIREMENTS = {
     "pytest",
     "setuptools",
     "shiboken6",
+    # Added for the DAW pillar's live audio engine -- see
+    # docs/DAW_VISION_SPEC.md's Security Architecture section and the
+    # FEATURE_SECURITY_REVIEW.md "Live Audio Engine" entry. Local-only, no
+    # network, no telemetry; required for real-time audio DSP, which a
+    # 2026-08-01 profiling pass showed pure-Python per-sample loops cannot
+    # hit budget for. This is the reviewed exception the original blanket
+    # block never recorded a reason for.
+    "numpy",
+    "scipy",
+    "sounddevice",
+    "cffi",       # sounddevice's PortAudio binding dependency
+    "pycparser",  # cffi's dependency
 }
 
 BLOCKED_RELEASE_REQUIREMENTS = {
-    "numpy",
-    "scipy",
     "requests",
     "urllib3",
     "sentry-sdk",

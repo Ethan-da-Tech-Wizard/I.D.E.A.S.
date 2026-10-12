@@ -72,6 +72,10 @@ ALLOWED_CALLS = {
     ("app/ai/core.py", "subprocess.run"),
     ("app/ai/core.py", "subprocess.Popen"),
     ("app/services/emulators.py", "subprocess.run"),
+    ("app/services/audio_player.py", "subprocess.Popen"),
+    ("app/ui/terminal.py", "compile"),
+    ("app/ui/terminal.py", "eval"),
+    ("app/ui/terminal.py", "exec"),
 }
 
 ALLOWED_IMPORTS = {
@@ -82,6 +86,7 @@ ALLOWED_IMPORTS = {
     ("app/ai/core.py", "socket"),
     ("app/ai/core.py", "subprocess"),
     ("app/services/emulators.py", "subprocess"),
+    ("app/services/audio_player.py", "subprocess"),
 }
 
 

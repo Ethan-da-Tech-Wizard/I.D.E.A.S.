@@ -49,6 +49,13 @@ class FXRack(QWidget):
         self.pitch_spin.valueChanged.connect(self.pitch_changed.emit)
         layout.addWidget(self.pitch_spin)
 
+        layout.addWidget(QLabel("Chance:"))
+        self.chance_spin = QSpinBox()
+        self.chance_spin.setRange(0, 100)
+        self.chance_spin.setValue(100)
+        self.chance_spin.setSuffix("%")
+        layout.addWidget(self.chance_spin)
+
         self.btn_chipmunk = QPushButton("Chipmunk")
         self.btn_chipmunk.setObjectName("pitchPreset")
         self.btn_chipmunk.clicked.connect(lambda: self.pitch_spin.setValue(CHIPMUNK_SEMITONES))
@@ -64,6 +71,18 @@ class FXRack(QWidget):
         self.btn_reset_pitch.setFixedWidth(24)
         self.btn_reset_pitch.clicked.connect(lambda: self.pitch_spin.setValue(0))
         layout.addWidget(self.btn_reset_pitch)
+
+        # Placeholder for the VST3/AU plugin bridge (app/services/audio/plugin_bridge.py),
+        # which is architecture-only today (stubbed scan/load, pass-through processing).
+        # Disabled so it can't imply real plugin hosting is available yet.
+        self.btn_plugins = QPushButton("Plugins (Coming Soon)")
+        self.btn_plugins.setObjectName("pluginSlotPlaceholder")
+        self.btn_plugins.setEnabled(False)
+        self.btn_plugins.setToolTip(
+            "VST3/AU plugin hosting is architected (app/services/audio/plugin_bridge.py) "
+            "but not yet wired to real audio processing."
+        )
+        layout.addWidget(self.btn_plugins)
 
     def _emit_changed(self, _checked: bool) -> None:
         self.fx_changed.emit(

@@ -88,3 +88,50 @@ def git_push(workspace_path: str, remote: str, branch: str) -> str:
     if code != 0:
         raise SecurityError(f"Git push failed: {err}")
     return out
+
+def git_get_branch(workspace_path: str) -> str:
+    try:
+        code, out, err = run_git_command(workspace_path, ["branch", "--show-current"])
+        if code == 0 and out.strip():
+            return out.strip()
+        # Fallback for older git versions
+        code, out, err = run_git_command(workspace_path, ["symbolic-ref", "--short", "HEAD"])
+        if code == 0 and out.strip():
+            return out.strip()
+        return "Detached HEAD"
+    except Exception:
+        return ""
+
+def git_get_file_diff(workspace_path: str, file_path: str) -> dict:
+    full_path = os.path.join(workspace_path, file_path)
+    if not is_safe_subpath(workspace_path, full_path):
+        return {}
+    if not os.path.exists(full_path):
+        return {}
+
+    code, out, err = run_git_command(workspace_path, ["diff", "-U0", "--", file_path])
+    if code != 0:
+        return {}
+
+    diff_status = {}
+    lines = out.splitlines()
+    for line in lines:
+        if line.startswith("@@"):
+            match = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+            if match:
+                old_start = int(match.group(1))
+                old_len = int(match.group(2)) if match.group(2) is not None else 1
+                new_start = int(match.group(3))
+                new_len = int(match.group(4)) if match.group(4) is not None else 1
+
+                if old_len == 0:
+                    for l in range(new_start, new_start + new_len):
+                        diff_status[l] = "added"
+                elif new_len == 0:
+                    diff_status[new_start] = "deleted"
+                else:
+                    for l in range(new_start, new_start + new_len):
+                        diff_status[l] = "modified"
+    return diff_status
+
+

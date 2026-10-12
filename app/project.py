@@ -33,6 +33,30 @@ def sanitize_project_state(raw_state: dict[str, Any]) -> dict[str, Any]:
             raise SecurityError("Project contains too many DAW tracks.")
         state["daw"] = daw
 
+    # Each of these is opaque, already-bounded state produced by the owning
+    # widget's own get_state() (Engine scene graph limits, DAW-style track
+    # caps for the video timeline, etc.); the project file's overall
+    # MAX_PROJECT_FILE_BYTES cap (enforced in write_text_file_safely) is the
+    # backstop against runaway growth, same as it already is for "daw" above.
+    engine = raw_state.get("engine")
+    if isinstance(engine, dict):
+        state["engine"] = engine
+
+    video_editor = raw_state.get("video_editor")
+    if isinstance(video_editor, dict):
+        tracks = video_editor.get("tracks", [])
+        if isinstance(tracks, list) and len(tracks) > MAX_TRACKS:
+            raise SecurityError("Project contains too many video timeline tracks.")
+        state["video_editor"] = video_editor
+
+    photo_editor = raw_state.get("photo_editor")
+    if isinstance(photo_editor, dict):
+        state["photo_editor"] = photo_editor
+
+    asset_manager = raw_state.get("asset_manager")
+    if isinstance(asset_manager, dict):
+        state["asset_manager"] = asset_manager
+
     return state
 
 
@@ -927,3 +951,11 @@ def load_project_file(path: str) -> dict[str, Any]:
 # AI Core safe optimization test
 
 # AI Core safe optimization test
+
+# AI Core safe optimization test
+
+# AI Core submit test
+
+# AI Core submit test
+
+# AI Core submit test

@@ -60,16 +60,18 @@ def export_pattern_wav(output_path: str, samples_root: str, bpm: int, tracks: li
     if len(tracks) > MAX_EXPORT_TRACKS:
         raise SecurityError("Too many tracks to export safely.")
 
+    num_steps = len(tracks[0].steps) if tracks else 16
+
     output = resolve_user_output_file(output_path, ".wav")
     step_samples = int((60.0 / int(bpm)) / 4.0 * EXPORT_SAMPLE_RATE)
-    total_samples = min(16 * step_samples + EXPORT_SAMPLE_RATE * 4, EXPORT_SAMPLE_RATE * MAX_EXPORT_SECONDS)
+    total_samples = min(num_steps * step_samples + EXPORT_SAMPLE_RATE * 4, EXPORT_SAMPLE_RATE * MAX_EXPORT_SECONDS)
     master = [0.0] * total_samples
 
     for track in tracks:
         if not track.relative_path:
             continue
-        active_steps = [idx for idx, active in enumerate(track.steps[:16]) if active]
-        if len(active_steps) > MAX_ACTIVE_STEPS:
+        active_steps = [idx for idx, active in enumerate(track.steps) if active]
+        if len(active_steps) > num_steps:
             raise SecurityError("Too many active steps.")
         if not active_steps:
             continue

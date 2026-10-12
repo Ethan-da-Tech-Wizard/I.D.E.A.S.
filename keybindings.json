@@ -1,0 +1,12 @@
+{
+  "preset": "VS Code",
+  "bindings": {
+    "File:New": "Ctrl+N",
+    "File:Open": "Ctrl+O",
+    "File:Save": "Ctrl+S",
+    "Layout:ToggleSidebar": "Ctrl+B",
+    "Layout:ToggleConsole": "Ctrl+`",
+    "Editor:RunCode": "Ctrl+R",
+    "Editor:StopCode": "Ctrl+K"
+  }
+}

@@ -119,6 +119,7 @@ def list_bundled_samples(samples_root: str) -> list[str]:
 class _SafeScriptValidator(ast.NodeVisitor):
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.actions: list[tuple[str, str]] = []
 
     def visit_Module(self, node: ast.Module) -> None:
         if len(node.body) > MAX_SCRIPT_STATEMENTS:
@@ -127,18 +128,27 @@ class _SafeScriptValidator(ast.NodeVisitor):
 
     def visit_Expr(self, node: ast.Expr) -> None:
         if not isinstance(node.value, ast.Call):
-            raise SecurityError("Only play_sample('name.wav') calls are allowed.")
+            raise SecurityError("Only play_sample('name.wav') and print('text') calls are allowed.")
         self.visit(node.value)
 
     def visit_Call(self, node: ast.Call) -> None:
-        if not isinstance(node.func, ast.Name) or node.func.id != "play_sample":
-            raise SecurityError("Only play_sample('name.wav') calls are allowed.")
+        if not isinstance(node.func, ast.Name):
+            raise SecurityError("Only simple function calls are allowed.")
+        func_name = node.func.id
+        if func_name not in {"play_sample", "print"}:
+            raise SecurityError("Only play_sample('name.wav') and print('text') calls are allowed.")
         if node.keywords or len(node.args) != 1:
-            raise SecurityError("play_sample requires exactly one positional argument.")
+            raise SecurityError("Functions require exactly one positional argument.")
         arg = node.args[0]
         if not isinstance(arg, ast.Constant) or not isinstance(arg.value, str):
-            raise SecurityError("play_sample argument must be a string literal.")
-        self.calls.append(validate_sample_name(arg.value))
+            raise SecurityError("Function argument must be a string literal.")
+        
+        if func_name == "play_sample":
+            val = validate_sample_name(arg.value)
+            self.calls.append(val)
+            self.actions.append(("play", val))
+        elif func_name == "print":
+            self.actions.append(("print", arg.value))
 
     def generic_visit(self, node: ast.AST) -> None:
         blocked_nodes = (
@@ -183,8 +193,19 @@ def parse_safe_script(code: str) -> list[str]:
     return validator.calls
 
 
-def run_safe_script(code: str, play_sample: Callable[[str], None]) -> list[str]:
-    sample_names = parse_safe_script(code)
-    for sample_name in sample_names:
-        play_sample(sample_name)
-    return sample_names
+def run_safe_script(code: str, play_sample: Callable[[str], None], print_func: Callable[[str], None] | None = None) -> list[str]:
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError as exc:
+        raise SecurityError(f"Script syntax error: {exc.msg}.") from exc
+
+    validator = _SafeScriptValidator()
+    validator.visit(tree)
+    
+    for action_type, arg in validator.actions:
+        if action_type == "play":
+            play_sample(arg)
+        elif action_type == "print" and print_func is not None:
+            print_func(arg)
+            
+    return validator.calls
