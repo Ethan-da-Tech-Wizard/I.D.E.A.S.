@@ -18,6 +18,7 @@ class AssetKind(StrEnum):
     IMAGE = "image"
     MODEL = "model"
     SCRIPT = "script"
+    VIDEO = "video"
 
 
 ALLOWED_ASSET_SUFFIXES: dict[str, AssetKind] = {
@@ -28,6 +29,8 @@ ALLOWED_ASSET_SUFFIXES: dict[str, AssetKind] = {
     ".obj": AssetKind.MODEL,
     ".py": AssetKind.SCRIPT,
     ".txt": AssetKind.SCRIPT,
+    ".mp4": AssetKind.VIDEO,
+    ".mov": AssetKind.VIDEO,
 }
 
 

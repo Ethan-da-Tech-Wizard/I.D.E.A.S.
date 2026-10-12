@@ -28,6 +28,22 @@ def test_save_load_workspace(tmp_path):
     loaded = load_workspace(ws_path)
     assert loaded["ide_content"] == "print('hello')"
 
+def test_save_load_workspace_preserves_studio_state(tmp_path):
+    ws_path = str(tmp_path / "my_workspace")
+    os.makedirs(ws_path)
+    state = {
+        "video_editor": {"tracks": [{"index": 0, "name": "Track 1", "clips": []}]},
+        "photo_editor": {"width": 2, "height": 2, "layers": []},
+        "asset_manager": {"root_path": ws_path, "current_folder": ""},
+    }
+    save_workspace(ws_path, state)
+
+    loaded = load_workspace(ws_path)
+    assert loaded["video_editor"] == state["video_editor"]
+    assert loaded["photo_editor"] == state["photo_editor"]
+    assert loaded["asset_manager"] == state["asset_manager"]
+
+
 def test_workspace_path_traversal_blocked(tmp_path):
     ws_path = str(tmp_path / "my_workspace")
     os.makedirs(ws_path)

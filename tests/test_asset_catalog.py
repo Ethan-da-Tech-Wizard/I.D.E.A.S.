@@ -27,6 +27,16 @@ def test_asset_catalog_groups_supported_local_files(tmp_path: Path) -> None:
     assert catalog.skipped_count == 1
 
 
+def test_asset_catalog_groups_video_clips(tmp_path: Path) -> None:
+    (tmp_path / "clips").mkdir()
+    (tmp_path / "clips" / "intro.mp4").write_bytes(b"ftyp")
+    (tmp_path / "clips" / "outro.MOV").write_bytes(b"ftyp")
+
+    catalog = build_asset_catalog(str(tmp_path))
+
+    assert sorted(e.name for e in catalog.by_kind(AssetKind.VIDEO)) == ["intro.mp4", "outro.MOV"]
+
+
 def test_asset_catalog_rejects_non_directory_root(tmp_path: Path) -> None:
     asset = tmp_path / "asset.wav"
     asset.write_bytes(b"RIFF")
