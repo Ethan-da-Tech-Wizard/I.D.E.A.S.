@@ -10,7 +10,7 @@ A local desktop creative-suite prototype with audio tooling, synthesized sample 
 ## Start here
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Documentation: id_app Architecture. Covers Prohibited Technologies; Required Technologies; Rules.
-- [THE_IDEAS_MANIFEST.md](THE_IDEAS_MANIFEST.md) — Reference notes for THE IDEAS MANIFEST: The application is "I.D.E.A.S." - a God-Tier, 5-in-1 creative software suite designed to be the ultimate and only application a creator needs. It combines a coding environment, music production, game development, artificial intelligence, an….
+- [THE_IDEAS_MANIFEST.md](THE_IDEAS_MANIFEST.md) — Creative-suite concept and project goals; descriptions in this historical design document are aspirations, not verified product capabilities.
 - [pyproject.toml](pyproject.toml) — Configuration or build metadata for pyproject; read alongside the application or tool that loads it.
 - [scripts/launch-linux.sh](scripts/launch-linux.sh) — Command-line automation for launch linux; review prerequisites and side effects before executing.
 
