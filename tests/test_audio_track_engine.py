@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_audio_track_engine.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Manages audio track graphs, clip arrangements, automation lanes, volume/pan faders, and routing mixer busses in the digital audio workstation.
+# ==============================================================================
+
 from __future__ import annotations
 
 import numpy as np

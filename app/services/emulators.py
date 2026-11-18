@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: emulators.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Manages external emulator and virtual hardware runtimes for testing game engine builds, ROM verification, and retro audio playback.
+# ==============================================================================
+
 """Retro emulator subprocess execution and memory hacking interface."""
 
 from __future__ import annotations

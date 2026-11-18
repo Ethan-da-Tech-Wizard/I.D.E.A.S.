@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: dependency_policy.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Utility script supporting build automation, security auditing, dependency verification, or asset generation.
+# ==============================================================================
+
 from __future__ import annotations
 
 import argparse

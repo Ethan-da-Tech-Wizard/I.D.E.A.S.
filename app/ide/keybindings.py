@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: keybindings.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Defines customizable keyboard shortcut tables, action bindings, chord sequence dispatchers, and input mapping profiles across IDE editing and playback modes.
+# ==============================================================================
+
 import os
 import json
 from PySide6.QtWidgets import QMessageBox

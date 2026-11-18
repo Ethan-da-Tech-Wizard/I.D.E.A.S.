@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: audio_export.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Bounces and renders multi-track DAW projects to standard audio file formats (WAV, FLAC, MP3), managing sample rate conversion, bit depth truncation, and normalization.
+# ==============================================================================
+
 from __future__ import annotations
 
 import math

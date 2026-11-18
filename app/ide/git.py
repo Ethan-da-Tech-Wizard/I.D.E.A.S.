@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: git.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Integrates Git version control operations directly into the IDE, providing repository status queries, diff inspection, commit creation, branch switching, and remote synchronization.
+# ==============================================================================
+
 import subprocess
 import os
 import re

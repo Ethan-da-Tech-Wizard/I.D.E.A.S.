@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_orchestration.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Coordinates complex multi-service workflows across audio synthesis, game engine rendering, and video composition pipelines.
+# ==============================================================================
+
 import os
 import pytest
 from app.services.orchestration import (

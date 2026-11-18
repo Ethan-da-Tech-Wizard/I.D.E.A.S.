@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: sample_import.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Imports, decodes, and caches external audio sample files, detecting transients, calculating root pitches, and preparing PCM wave data for sampler instruments.
+# ==============================================================================
+
 """Validated import of user-selected WAV files into a workspace's custom sample folder.
 
 This deliberately does NOT weaken the DAW's existing bundled-sample boundary

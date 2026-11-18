@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: dock_panels.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Manages tear-off and dockable window panels, splitters, tabbed panel containers, and saved window arrangements.
+# ==============================================================================
+
 from __future__ import annotations
 
 import base64

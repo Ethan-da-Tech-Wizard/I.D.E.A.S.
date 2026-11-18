@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_sample_import.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Imports, decodes, and caches external audio sample files, detecting transients, calculating root pitches, and preparing PCM wave data for sampler instruments.
+# ==============================================================================
+
 from __future__ import annotations
 
 import wave

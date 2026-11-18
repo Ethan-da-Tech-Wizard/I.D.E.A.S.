@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: macro_panel.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Provides macro recording, action sequencing, script binding, and quick automation trigger buttons for repetitive developer workflows.
+# ==============================================================================
+
 import re
 import time
 from PySide6.QtWidgets import (

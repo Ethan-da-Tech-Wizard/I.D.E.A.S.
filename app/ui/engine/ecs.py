@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: ecs.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: High-performance Entity Component System (ECS) architecture for game logic, entity management, component queries, and system iteration.
+# ==============================================================================
+
 from __future__ import annotations
 
 from dataclasses import dataclass

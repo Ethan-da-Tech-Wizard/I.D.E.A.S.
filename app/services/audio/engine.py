@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: engine.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Master audio engine core coordinating real-time audio playback threads, mixer graph evaluation, voice summing, and ASIO/CoreAudio device interaction.
+# ==============================================================================
+
 """Real-time audio engine: owns the sounddevice callback stream, the
 sample-accurate step clock, master bus summing + limiter, and overload
 shedding, per docs/DAW_VISION_SPEC.md's "Architecture Decision: Live Audio

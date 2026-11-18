@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: plugin_bridge.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Discovers, sandboxes, and hosts external VST3/AU audio plugins, managing parameter automation, audio buffer exchange, and plugin GUI embedding.
+# ==============================================================================
+
 """Architecture-only surface for future VST3/AU plugin hosting.
 
 Native plugin loading, parameter automation, and real-time DSP processing are

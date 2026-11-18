@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: asset_manager.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Organizes project creative assets (textures, audio samples, 3D models, shaders, scripts) with search filtering, metadata tagging, and preview thumbnails.
+# ==============================================================================
+
 """Unified asset browser: a pure-Python catalog/filter model plus a Qt tree+list UI.
 
 AssetManagerModel wraps app.ui.assets.catalog.build_asset_catalog and adds

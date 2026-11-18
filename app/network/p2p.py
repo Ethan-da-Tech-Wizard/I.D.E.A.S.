@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: p2p.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Implements peer-to-peer network discovery and socket transport for multi-user real-time collaborative editing, asset sharing, and synchronized audio playback.
+# ==============================================================================
+
 """Peer-to-peer networking module for local collaboration."""
 
 from __future__ import annotations

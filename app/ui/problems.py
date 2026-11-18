@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: problems.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Problems and diagnostics panel grouping linter errors, compiler warnings, and runtime exceptions with jump-to-line navigation.
+# ==============================================================================
+
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView
 from PySide6.QtCore import Qt, Signal
 

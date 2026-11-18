@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: database.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Encapsulates SQLite database persistence for IDE user preferences, project recents, asset metadata tags, and workspace session caches.
+# ==============================================================================
+
 import json
 import sqlite3
 import os

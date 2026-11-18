@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: welcome.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Welcome dashboard presenting recent project links, starter project templates, tutorials, and quick setup options.
+# ==============================================================================
+
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QFrame
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont

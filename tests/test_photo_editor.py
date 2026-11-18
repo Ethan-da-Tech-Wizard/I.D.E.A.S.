@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_photo_editor.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Source code editor component featuring line numbering, syntax highlighting, bracket matching, indentation guides, and multi-tab document editing.
+# ==============================================================================
+
 from __future__ import annotations
 
 import pytest

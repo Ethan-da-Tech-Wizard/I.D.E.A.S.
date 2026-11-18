@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: audio_fx.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Implements digital signal processing audio effect chains including equalizers, compressors, reverbs, delays, and distortion filters for track and master inserts.
+# ==============================================================================
+
 """Offline sample effects: Distortion -> Delay -> Reverb, rendered to a cached WAV.
 
 QSoundEffect/QMediaPlayer have no live DSP graph, so effects are pre-rendered

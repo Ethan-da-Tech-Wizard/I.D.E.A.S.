@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_audio_dsp.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Provides low-level digital signal processing algorithms, FFT transforms, filter design kernels, and windowing functions for audio analysis and synthesis.
+# ==============================================================================
+
 from __future__ import annotations
 
 import math

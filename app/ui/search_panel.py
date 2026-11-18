@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: search_panel.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Workspace-wide text search and replace interface supporting regular expressions, file filtering, case sensitivity, and batch replacements.
+# ==============================================================================
+
 import os
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QListWidget, QListWidgetItem, QLabel
 from PySide6.QtCore import Qt, Signal

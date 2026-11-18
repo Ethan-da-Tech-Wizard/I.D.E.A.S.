@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: core.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Provides AI assistant integration and local language model query interfaces for intelligent code completion, automated refactoring suggestions, and generative creative workflows.
+# ==============================================================================
+
 import subprocess
 import os
 import json

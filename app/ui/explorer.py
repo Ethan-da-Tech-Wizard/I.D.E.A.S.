@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: explorer.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Hierarchical tree view file explorer supporting directory navigation, file creation/renaming/deletion, and drag-and-drop project structuring.
+# ==============================================================================
+
 import os
 from PySide6.QtWidgets import QTreeView, QFileSystemModel, QMenu, QInputDialog, QMessageBox
 from PySide6.QtCore import Qt, QDir, QFileSystemWatcher, QUrl

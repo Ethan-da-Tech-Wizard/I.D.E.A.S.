@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: shader_builder.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Interactive node-based shader graph builder compiling visual shader networks into GLSL/HLSL fragment and vertex programs.
+# ==============================================================================
+
 from __future__ import annotations
 
 import json

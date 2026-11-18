@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_theme_engine.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Dynamic Qt stylesheet and palette theme engine supporting dark/light modes, neon accent presets, and custom CSS styling across the entire interface.
+# ==============================================================================
+
 from __future__ import annotations
 
 import os

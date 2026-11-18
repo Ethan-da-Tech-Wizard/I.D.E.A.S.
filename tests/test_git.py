@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_git.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Integrates Git version control operations directly into the IDE, providing repository status queries, diff inspection, commit creation, branch switching, and remote synchronization.
+# ==============================================================================
+
 import os
 import pytest
 from app.ide.git import git_init, git_status, git_add, git_commit, git_remote_add, git_push

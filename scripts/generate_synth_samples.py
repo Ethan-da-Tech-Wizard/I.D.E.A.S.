@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: generate_synth_samples.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Utility script supporting build automation, security auditing, dependency verification, or asset generation.
+# ==============================================================================
+
 """One-time content generator for the bundled synth/sfx sample library.
 
 Pure stdlib (wave + math + random) so it needs nothing beyond the project's

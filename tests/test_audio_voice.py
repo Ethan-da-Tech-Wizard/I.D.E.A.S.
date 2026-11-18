@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_audio_voice.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Implements polyphonic virtual synthesizer voice allocation, ADSR envelope generation, oscillator wave tables, and filter modulation.
+# ==============================================================================
+
 from __future__ import annotations
 
 import numpy as np

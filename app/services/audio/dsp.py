@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: dsp.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Provides low-level digital signal processing algorithms, FFT transforms, filter design kernels, and windowing functions for audio analysis and synthesis.
+# ==============================================================================
+
 """Shared, real-time-safe numpy DSP core for the live audio engine.
 
 Every class here follows the Real-Time Safety Contract in

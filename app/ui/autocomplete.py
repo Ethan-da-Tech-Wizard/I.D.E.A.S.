@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: autocomplete.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Provides contextual code autocompletion popups, language symbol suggestions, keyword matching, and snippet expansion for the source code editor.
+# ==============================================================================
+
 import re
 from PySide6.QtWidgets import QFrame, QListWidget, QListWidgetItem, QHBoxLayout, QTextEdit
 from PySide6.QtCore import Qt, QRect, QPoint

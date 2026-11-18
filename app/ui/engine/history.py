@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: history.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Undo/redo command history stack supporting atomic scene operations, transaction rollbacks, and action replay.
+# ==============================================================================
+
 from __future__ import annotations
 
 from copy import deepcopy

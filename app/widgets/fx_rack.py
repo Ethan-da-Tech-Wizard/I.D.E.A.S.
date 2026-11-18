@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: fx_rack.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Modular audio effects rack UI component displaying insert slots, knob controls, bypass toggles, and metering.
+# ==============================================================================
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSpinBox, QWidget
 

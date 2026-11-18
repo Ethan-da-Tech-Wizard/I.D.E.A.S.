@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: application.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Core Qt MainWindow controller uniting the IDE, DAW, Engine, AI, and Studio creative workspaces. Manages top-level menus, docking splitters, tabbed navigation, media player controls, and workspace state.
+# ==============================================================================
+
 import sys
 import os
 from typing import Any

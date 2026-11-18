@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_compiler.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Executes build systems, language compilers, and linter toolchains asynchronously, capturing stdout/stderr streams and formatting error diagnostics for the problems view.
+# ==============================================================================
+
 import os
 import pytest
 from app.ide.compiler import compile_cpp, compile_rust

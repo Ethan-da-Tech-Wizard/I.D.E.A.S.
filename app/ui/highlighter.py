@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: highlighter.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Syntax highlighting engine leveraging QSyntaxHighlighter and Pygments regex rules to colorize source code across dozens of programming languages.
+# ==============================================================================
+
 from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont
 from PySide6.QtCore import Qt, QRegularExpression
 

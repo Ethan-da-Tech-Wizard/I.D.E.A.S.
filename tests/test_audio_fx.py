@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_audio_fx.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Implements digital signal processing audio effect chains including equalizers, compressors, reverbs, delays, and distortion filters for track and master inserts.
+# ==============================================================================
+
 from __future__ import annotations
 
 import math

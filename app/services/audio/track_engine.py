@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: track_engine.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Manages audio track graphs, clip arrangements, automation lanes, volume/pan faders, and routing mixer busses in the digital audio workstation.
+# ==============================================================================
+
 """TrackState (the JSON-serializable parameter contract from
 docs/DAW_VISION_SPEC.md's "Data Model & Parameter Contract") and
 TrackProcessor (the runtime object that owns a track's voice pool and its

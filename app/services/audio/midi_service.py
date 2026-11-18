@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: midi_service.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Parses, records, and dispatches MIDI note and control change messages from connected physical controllers to virtual synth instruments and DAW tracks.
+# ==============================================================================
+
 """MIDI hardware bridge for the DAW step sequencer.
 
 `python-rtmidi` is an optional dependency. When it is not installed, or no

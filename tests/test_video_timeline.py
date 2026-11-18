@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_video_timeline.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Non-linear video editing timeline component managing video/audio clip tracks, transitions, keyframing, and video playback preview.
+# ==============================================================================
+
 from __future__ import annotations
 
 import pytest

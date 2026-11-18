@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: compiler.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Executes build systems, language compilers, and linter toolchains asynchronously, capturing stdout/stderr streams and formatting error diagnostics for the problems view.
+# ==============================================================================
+
 import subprocess
 import os
 from typing import Tuple

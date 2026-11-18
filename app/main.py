@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: main.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Primary application launcher for the I.D.E.A.S. integrated creative suite. Handles fatal startup exception recovery, initializes the Qt QApplication lifecycle, and presents the main application window.
+# ==============================================================================
+
 import sys
 from PySide6.QtWidgets import QApplication, QMessageBox
 from app.application import create_app

@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: workspace.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Serializes and restores workspace layout configurations, open editor documents, cursor coordinates, and dock panel arrangements between user sessions.
+# ==============================================================================
+
 import os
 import json
 import shutil

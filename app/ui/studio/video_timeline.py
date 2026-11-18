@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: video_timeline.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Non-linear video editing timeline component managing video/audio clip tracks, transitions, keyframing, and video playback preview.
+# ==============================================================================
+
 """Non-linear video editing timeline: pure data model plus a QPainter-based widget.
 
 Editing logic (clip placement, overlap prevention, splitting, serialization) lives

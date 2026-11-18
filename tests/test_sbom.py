@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_sbom.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Automated unit and integration test suite validating subsystem invariants, error handling, edge cases, and component behavior.
+# ==============================================================================
+
 from __future__ import annotations
 
 from scripts.generate_sbom import build_sbom

@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: scene_io.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Serializes and deserializes game scene graphs, node hierarchies, entity components, and world environments to JSON.
+# ==============================================================================
+
 from __future__ import annotations
 
 import json

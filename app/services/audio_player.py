@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: audio_player.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Controls low-latency audio stream playback, buffer scheduling, transport controls (play, pause, seek, loop), and audio hardware output device routing.
+# ==============================================================================
+
 """Lightweight audio playback engine using PulseAudio (paplay) with fallback.
 
 QSoundEffect and QMediaPlayer both fail to produce reliable audio on

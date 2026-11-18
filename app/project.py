@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: project.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Manages project metadata models, manifest serialization, file format versioning, and project load/save operations across IDE workspaces and creative audio/game assets.
+# ==============================================================================
+
 from __future__ import annotations
 
 import json

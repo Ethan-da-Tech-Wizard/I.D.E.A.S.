@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_midi_service.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Parses, records, and dispatches MIDI note and control change messages from connected physical controllers to virtual synth instruments and DAW tracks.
+# ==============================================================================
+
 from __future__ import annotations
 
 import pytest

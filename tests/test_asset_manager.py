@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_asset_manager.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Organizes project creative assets (textures, audio samples, 3D models, shaders, scripts) with search filtering, metadata tagging, and preview thumbnails.
+# ==============================================================================
+
 from __future__ import annotations
 
 from pathlib import Path

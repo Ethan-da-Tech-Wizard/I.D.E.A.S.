@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_engine_panels.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Inspector and hierarchy panels for the game engine, displaying entity scene trees, component properties, and live physics parameters.
+# ==============================================================================
+
 from __future__ import annotations
 
 import os

@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_workspace_storage.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Automated unit and integration test suite validating subsystem invariants, error handling, edge cases, and component behavior.
+# ==============================================================================
+
 import os
 import pytest
 from app.storage.workspace import save_workspace, load_workspace, get_workspace_dir, init_workspace, is_safe_subpath

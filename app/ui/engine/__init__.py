@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: __init__.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Package initialization marker establishing the namespace and public exports for the engine module.
+# ==============================================================================
+
 """Engine viewport, ECS, physics, and shader builder."""
 
 from app.ui.engine.ecs import Collider, RigidBody, Sprite, Transform, World

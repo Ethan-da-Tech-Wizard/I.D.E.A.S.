@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: physics.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: 2D/3D physics simulation engine managing rigid bodies, collision detection, gravity, forces, and raycasting.
+# ==============================================================================
+
 from __future__ import annotations
 
 from dataclasses import dataclass

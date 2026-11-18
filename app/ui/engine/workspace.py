@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: workspace.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Provides supporting utilities and functional implementation for the I.D.E.A.S. suite.
+# ==============================================================================
+
 from __future__ import annotations
 
 from typing import Any

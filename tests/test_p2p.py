@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_p2p.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Implements peer-to-peer network discovery and socket transport for multi-user real-time collaborative editing, asset sharing, and synchronized audio playback.
+# ==============================================================================
+
 import pytest
 import socket
 import json

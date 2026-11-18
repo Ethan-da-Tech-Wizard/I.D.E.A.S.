@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: editor.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Source code editor component featuring line numbering, syntax highlighting, bracket matching, indentation guides, and multi-tab document editing.
+# ==============================================================================
+
 import os
 import re
 from PySide6.QtWidgets import QPlainTextEdit, QWidget, QTextEdit, QTabWidget, QTabBar, QSplitter, QApplication

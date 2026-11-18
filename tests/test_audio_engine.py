@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_audio_engine.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Master audio engine core coordinating real-time audio playback threads, mixer graph evaluation, voice summing, and ASIO/CoreAudio device interaction.
+# ==============================================================================
+
 from __future__ import annotations
 
 import numpy as np

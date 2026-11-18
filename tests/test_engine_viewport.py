@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_engine_viewport.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Hardware-accelerated OpenGL/Vulkan rendering viewport for live 2D/3D game scene inspection, camera controls, and entity manipulation gizmos.
+# ==============================================================================
+
 from __future__ import annotations
 
 import os

@@ -1,4 +1,11 @@
 #!/bin/bash
+# ==============================================================================
+# Program: security_gate.sh
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Shell script automating operational deployment, release verification, dependency sandboxing, or build packaging.
+# ==============================================================================
+
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: terminal.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Embedded terminal emulator running system shell processes (bash, zsh, powershell) with ANSI color rendering and interactive input/output.
+# ==============================================================================
+
 import sys
 from io import StringIO
 from PySide6.QtWidgets import QPlainTextEdit

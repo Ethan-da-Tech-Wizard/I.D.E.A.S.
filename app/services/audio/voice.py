@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: voice.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Implements polyphonic virtual synthesizer voice allocation, ADSR envelope generation, oscillator wave tables, and filter modulation.
+# ==============================================================================
+
 """Per-voice playback: one Voice = one note from trigger to the end of its
 release tail. Owns its own amp envelope, mod envelope, LFO, and filter --
 see the "Per-voice vs. per-track processing split" in

@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: test_plugin_bridge.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Discovers, sandboxes, and hosts external VST3/AU audio plugins, managing parameter automation, audio buffer exchange, and plugin GUI embedding.
+# ==============================================================================
+
 from __future__ import annotations
 
 from pathlib import Path

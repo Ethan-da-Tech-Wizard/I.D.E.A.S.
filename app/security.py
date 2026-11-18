@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: security.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Enforces runtime security policies, sandbox path containment to prevent directory traversal vulnerabilities, safe text file reading, sample path resolution, and sanitized subprocess script execution.
+# ==============================================================================
+
 from __future__ import annotations
 
 import ast

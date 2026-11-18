@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: daw.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Main graphical digital audio workstation canvas displaying multi-track timeline arrangements, beat grids, clip blocks, playheads, and transport controls.
+# ==============================================================================
+
 import math
 import os
 import random

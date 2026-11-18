@@ -1,3 +1,10 @@
+# ==============================================================================
+# Program: photo_editor.py
+# Programmer: Ethan-da-Tech-Wizard
+# Last Modified: November 18, 2026
+# Purpose: Source code editor component featuring line numbering, syntax highlighting, bracket matching, indentation guides, and multi-tab document editing.
+# ==============================================================================
+
 """Raster drawing canvas: a pure-Python layer/undo model plus a QPainter widget.
 
 Layer, LayerStack, and UndoStack hold and manipulate QImage buffers directly and
