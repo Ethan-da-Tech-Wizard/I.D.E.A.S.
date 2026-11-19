@@ -1,8 +1,19 @@
 # ==============================================================================
-# Program: dock_panels.py
+# Program: app/ui/themes/dock_panels.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Manages tear-off and dockable window panels, splitters, tabbed panel containers, and saved window arrangements.
+# Purpose: dockable side panels for the Engine mode and a manager for them. DockablePanel wraps any
+# widget in a QDockWidget with a compact custom title bar; PanelManager keeps a registry of panel
+# FACTORIES (functions that build a widget), creates/destroys panels on demand and saves/restores
+# the whole dock layout, including a separate saved layout per app mode (layouts/<mode>.json).
+# Used by: app/application.py (build_engine_mode) with EngineWorkspace.dock_panel_factories();
+# tests/test_dock_panels.py.
+# Design: panels are created lazily from factories, so closing and reopening a panel builds a fresh
+# widget; layout data is Qt's opaque saveState() bytes, stored base64-encoded in JSON.
+# Known quirks noticed: the title bar rows use vertical layouts, so the title and the close button
+# stack instead of sitting side by side; restore_mode_layout lets JSON and base64 decoding errors
+# escape as their own exception types rather than SecurityError.
+# The three create_*_panel functions at the bottom are placeholders with fixed demo content.
 # ==============================================================================
 
 from __future__ import annotations
@@ -29,6 +40,7 @@ from PySide6.QtWidgets import (
 from app.security import SecurityError
 
 
+# A panel factory takes no arguments and returns the widget to dock; registered by name.
 PanelFactory = Callable[[], QWidget]
 
 
@@ -36,14 +48,28 @@ class DockablePanel(QDockWidget):
     """Dock widget wrapper with a compact custom title bar."""
 
     def __init__(self, panel_name: str, content: QWidget, parent: QWidget | None = None) -> None:
+        """Create the dock, install the content widget and the custom title bar.
+
+        Args:
+            panel_name: display title (also the registry key used by PanelManager).
+            content: widget shown inside the dock.
+            parent: usually the main window.
+        """
         super().__init__(panel_name, parent)
         self.panel_name = panel_name
+        # Qt requires a unique, stable object name per dock for saveState()/restoreState() to match docks; sanitised from the title.
         self.setObjectName(f"DockablePanel_{self._object_suffix(panel_name)}")
+        # The user may dock it on any side of the main window.
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
         self.setWidget(content)
         self.setTitleBarWidget(self._build_title_bar(panel_name))
 
     def _build_title_bar(self, panel_name: str) -> QWidget:
+        """Build the replacement title bar: panel title plus a small close button.
+
+        Returns:
+            The widget to install with setTitleBarWidget.
+        """
         title_bar = QWidget(self)
         title_bar.setObjectName("DockPanelTitleBar")
         layout = QVBoxLayout(title_bar)
@@ -51,10 +77,12 @@ class DockablePanel(QDockWidget):
         layout.setSpacing(4)
 
         label = QLabel(panel_name)
+        # Shared object name so the global stylesheet styles it like other panel headings.
         label.setObjectName("panelTitle")
         close_button = QPushButton("x")
         close_button.setObjectName("DockPanelCloseButton")
         close_button.setFixedSize(22, 22)
+        # Closing hides the dock; PanelManager still tracks it until destroyed.
         close_button.clicked.connect(self.close)
 
         row = QWidget(title_bar)
@@ -66,6 +94,7 @@ class DockablePanel(QDockWidget):
         return title_bar
 
     def _object_suffix(self, panel_name: str) -> str:
+        """Turn a title into a safe identifier ("Scene Tree" -> "Scene_Tree"), falling back to "Panel" for empty results."""
         return "".join(ch if ch.isalnum() else "_" for ch in panel_name).strip("_") or "Panel"
 
 
@@ -73,7 +102,13 @@ class PanelManager:
     """Registers, creates, destroys, and serializes dockable panels."""
 
     def __init__(self, main_window: QMainWindow) -> None:
+        """Remember the main window that hosts the docks and start with no factories or panels.
+
+        Args:
+            main_window: QMainWindow that owns the dock areas.
+        """
         self._main_window = main_window
+        # name -> factory (what CAN be created); _panels: name -> live DockablePanel (what exists now).
         self._factories: dict[str, PanelFactory] = {}
         self._panels: dict[str, DockablePanel] = {}
 
@@ -96,9 +131,11 @@ class PanelManager:
         if name in self._panels:
             return self._panels[name]
 
+        # The factory is called now, not at registration time (lazy creation).
         panel = DockablePanel(name, self._factories[name](), self._main_window)
         self._main_window.addDockWidget(area, panel)
         self._panels[name] = panel
+        # Forget the panel when Qt destroys it, even if that happens outside destroy_panel (for example window teardown).
         panel.destroyed.connect(lambda _obj=None, panel_name=name: self._panels.pop(panel_name, None))
         return panel
 
@@ -107,6 +144,7 @@ class PanelManager:
         panel = self._panels.pop(name, None)
         if panel is None:
             return False
+        # Detach from the layout before deleting so the layout state stays consistent.
         self._main_window.removeDockWidget(panel)
         panel.close()
         panel.deleteLater()
@@ -136,6 +174,7 @@ class PanelManager:
         directory = self._layout_config_dir(config_dir)
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, f"{mode_name}.json")
+        # Binary Qt state is base64-encoded so it fits in JSON.
         payload = {"mode": mode_name, "layout": base64.b64encode(self.save_layout()).decode("ascii")}
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
@@ -162,10 +201,12 @@ class PanelManager:
         self.register_panel("Console", create_console_panel)
 
     def _validate_mode_name(self, mode_name: str) -> None:
+        """Mode names become file names: reject empty names, names with path parts and names containing a dot."""
         if not mode_name or Path(mode_name).name != mode_name or "." in mode_name:
             raise SecurityError("Mode layout name must be a simple name.")
 
     def _layout_config_dir(self, config_dir: str | None) -> str:
+        """Return the folder for layout files: the explicit one, else <app data>/layouts (fallback ~/.local/share/id_app/layouts)."""
         if config_dir is not None:
             return os.path.abspath(config_dir)
         app_data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
