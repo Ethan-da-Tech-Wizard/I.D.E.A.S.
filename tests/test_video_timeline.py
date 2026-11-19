@@ -133,7 +133,7 @@ def test_remove_track_out_of_range_returns_false() -> None:
     assert model.remove_track(5) is False
 
 
-# A timeline needs at least one track and at most MAX_TRACKS (limits resource use and mirrors the project-file limit).
+# A timeline needs at least one track and at most MAX_TRACKS (limits resource use).
 def test_track_count_bounds() -> None:
     with pytest.raises(SecurityError):
         TimelineModel(track_count=0)
