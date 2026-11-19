@@ -1,8 +1,26 @@
 # ==============================================================================
-# Program: generate_synth_samples.py
+# Program: scripts/generate_synth_samples.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Utility script supporting build automation, security auditing, dependency verification, or asset generation.
+# Purpose: developer tool that SYNTHESISES the bundled sound library (app/resources/samples/*.wav)
+# from scratch with plain maths, so the repository ships original audio with no third-party sample
+# licences. Run it only when you want to add or tweak sounds; it overwrites the files it generates.
+# Used by: nothing at run time. The DAW (app/ui/daw.py) just lists and plays the resulting WAV
+# files; this script is the source of truth for how they were made.
+# How it works: small DSP helpers (oscillators, ADSR envelope, LFO, one-pole low-pass, noise,
+# exponential sweeps, peak-normalise-and-fade) are combined by many `gen_*` recipe functions, each
+# returning a list of floats in -1..1. build_catalog() maps an output path such as
+# "synth/bass/sub_bass_low.wav" to the recipe call that produces it; main() renders them all to
+# mono 16-bit 44.1 kHz WAV files and re-opens each one as a sanity check.
+# Determinism: noise uses seeded random generators, so re-running reproduces the same files.
+# Design decisions: pure standard library (wave, math, random, array) so it runs in any
+# interpreter without numpy; slow per-sample Python loops are acceptable for a one-off tool.
+# Output files are written through validate_sample_name/resolve_sample_path from app/security.py,
+# the same checks the DAW uses when loading, so a bad catalog key cannot write outside the folder.
+# Policy: names are generic and nothing imitates a specific artist, voice or recording.
+# Known limits: the "filters" are crude (one-pole low-pass, a fake resonance boost), so results are
+# characterful rather than studio quality; runtime is several minutes for the full catalog.
+# Run: python3 scripts/generate_synth_samples.py
 # ==============================================================================
 
 """One-time content generator for the bundled synth/sfx sample library.
@@ -24,18 +42,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.security import resolve_sample_path, validate_sample_name
 from app.services.audio_fx import apply_delay, apply_distortion, apply_pitch_shift, apply_reverb
 
+# CD-quality sample rate; every generated file uses it (the engine resamples if the output rate differs).
 SAMPLE_RATE = 44100
+# Destination folder; resolved relative to this file so the script works from any working directory.
 SAMPLES_ROOT = Path(__file__).resolve().parent.parent / "app" / "resources" / "samples"
 
 
 def n_samples(duration: float) -> int:
+    """Number of samples for `duration` seconds (at least 1, so zero-length requests still produce a valid buffer)."""
     return max(1, int(SAMPLE_RATE * duration))
 
 
 def phase_wave(freqs: list[float], wave_shape: str = "sine", pulse_width: float = 0.5) -> list[float]:
+    """Generate an oscillator waveform whose frequency can change every sample.
+
+    Args:
+        freqs: instantaneous frequency in Hz for each output sample (so vibrato, sweeps and pitch drops are just lists).
+        wave_shape: "sine", "saw", "square" or "triangle".
+        pulse_width: duty cycle (0..1) of the square wave; 0.5 is a symmetric square.
+
+    Returns:
+        Samples in -1..1.
+
+    Raises:
+        ValueError: unknown wave_shape.
+    """
     out = []
     phase = 0.0
     for f in freqs:
+        # Phase accumulator in cycles (0..1): adding frequency / sample rate each sample keeps the waveform continuous even when the frequency changes, which a direct sin(2*pi*f*t) would not.
         phase = (phase + f / SAMPLE_RATE) % 1.0
         if wave_shape == "sine":
             out.append(math.sin(2 * math.pi * phase))
@@ -51,10 +86,20 @@ def phase_wave(freqs: list[float], wave_shape: str = "sine", pulse_width: float 
 
 
 def adsr(n: int, attack: float, decay: float, sustain: float, release: float) -> list[float]:
+    """Build an Attack-Decay-Sustain-Release envelope list of length `n`.
+
+    Args:
+        n: total number of samples.
+        attack, decay, release: durations in seconds.
+        sustain: level (0..1) held after the decay.
+
+    The sustain part takes whatever samples remain after attack, decay and release; the result is padded with the last value or truncated to exactly n.
+    """
     a = int(SAMPLE_RATE * attack)
     d = int(SAMPLE_RATE * decay)
     r = int(SAMPLE_RATE * release)
     s = max(0, n - a - d - r)
+    # Four pieces are concatenated: linear rise 0->1, linear fall 1->sustain, flat sustain, linear fall sustain->0. The "if a else 1.0" guards avoid division by zero when a stage has length 0.
     env: list[float] = []
     env.extend(i / a if a else 1.0 for i in range(a))
     env.extend(1.0 - (1.0 - sustain) * (i / d if d else 1.0) for i in range(d))
@@ -66,42 +111,62 @@ def adsr(n: int, attack: float, decay: float, sustain: float, release: float) ->
 
 
 def lfo(n: int, rate: float, lo: float, hi: float) -> list[float]:
+    """Low-frequency oscillator: a sine moving between `lo` and `hi` at `rate` Hz, one value per sample (used to modulate a filter cutoff, pulse width or level)."""
+    # Centre and half-range of the swing: mid + amp * sin(...) stays within lo..hi.
     mid, amp = (hi + lo) / 2, (hi - lo) / 2
     return [mid + amp * math.sin(2 * math.pi * rate * (i / SAMPLE_RATE)) for i in range(n)]
 
 
 def lowpass(samples: list[float], cutoffs: list[float]) -> list[float]:
+    """One-pole low-pass filter with a cutoff that may change every sample.
+
+    Args:
+        samples: input signal.
+        cutoffs: cutoff frequency in Hz for each sample (same length as samples); values are clamped to 20 Hz .. just below Nyquist.
+
+    A single pole gives a gentle 6 dB per octave slope, so this is a warm, soft filter rather than a steep one.
+    """
     # one-pole IIR; alpha derived from cutoff so a varying cutoff list gives a filter sweep/wobble
     out = []
     y = 0.0
     for x, cutoff in zip(samples, cutoffs):
         cutoff = max(20.0, min(cutoff, SAMPLE_RATE / 2 - 100))
         alpha = 1 - math.exp(-2 * math.pi * cutoff / SAMPLE_RATE)
+        # Moves the output a fraction `alpha` of the way towards the input each sample; alpha = 1 - e^(-2*pi*fc/fs) is the standard conversion from cutoff to smoothing coefficient.
         y += alpha * (x - y)
         out.append(y)
     return out
 
 
 def white_noise(n: int, seed: int = 0) -> list[float]:
+    """Uniform random samples in -1..1 from a seeded generator (same seed, same noise)."""
     rng = random.Random(seed)
     return [rng.uniform(-1.0, 1.0) for _ in range(n)]
 
 
 def apply_env(samples: list[float], env: list[float]) -> list[float]:
+    """Multiply samples by an envelope element-wise (applies loudness shaping)."""
     return [s * e for s, e in zip(samples, env)]
 
 
 def exp_sweep(f_start: float, f_end: float, n: int) -> list[float]:
+    """Frequencies that move from f_start to f_end exponentially over n samples; exponential is how pitch is perceived, so it sounds like a steady glide."""
     ratio = f_end / f_start
     return [f_start * (ratio ** (i / n)) for i in range(n)]
 
 
 def finalize(samples: list[float], peak: float = 0.9, fade_ms: float = 5.0) -> array:
+    """Convert floats to 16-bit PCM: normalise the peak to `peak` (default 0.9, leaving headroom) and fade the first and last `fade_ms` to avoid clicks at the edges.
+
+    Returns:
+        array("h") of signed 16-bit samples (empty input gives an empty array).
+    """
     if not samples:
         return array("h")
     max_abs = max(abs(s) for s in samples) or 1.0
     scale = peak / max_abs
     n = len(samples)
+    # Fade length in samples, at most half the sound so very short sounds still work.
     fade_n = min(max(1, int(SAMPLE_RATE * fade_ms / 1000)), n // 2)
     out = array("h")
     for i, s in enumerate(samples):
@@ -110,15 +175,24 @@ def finalize(samples: list[float], peak: float = 0.9, fade_ms: float = 5.0) -> a
             v *= i / fade_n
         elif i >= n - fade_n:
             v *= (n - i) / fade_n
+        # Clamp to the symmetric int16 range before conversion.
         out.append(int(max(-32767, min(32767, v * 32767))))
     return out
 
 
 def write_wav(relative_path: str, samples: list[float]) -> None:
+    """Write `samples` as a mono 16-bit WAV at SAMPLES_ROOT/relative_path.
+
+    Raises:
+        ValueError: the resolved folder is outside SAMPLES_ROOT.
+        SecurityError: from validate_sample_name for an unsafe name.
+    """
+    # Same rule the DAW applies when loading: only plain relative .wav names.
     validate_sample_name(relative_path)
     path = SAMPLES_ROOT / relative_path
     root = SAMPLES_ROOT.resolve()
     resolved_parent = path.parent.resolve(strict=False)
+    # Second guard: after resolving symlinks, the destination folder must still be SAMPLES_ROOT or below it.
     if root != resolved_parent and root not in resolved_parent.parents:
         raise ValueError(f"refusing to write outside sample root: {relative_path}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,10 +204,12 @@ def write_wav(relative_path: str, samples: list[float]) -> None:
         wav_file.writeframes(pcm.tobytes())
 
 
+# Every gen_* function below is one "sound recipe". Naming follows the folder they land in (synth/wubs, synth/bass, instruments/..., sfx/...). Parameters are mostly musical: frequencies in Hz, durations in seconds, modulation rates in Hz.
 # --- recipes -----------------------------------------------------------
 
 def gen_wub(freq: float, wobble_rate: float, cutoff_lo: float, cutoff_hi: float,
             duration: float = 2.0, wave_shape: str = "saw") -> list[float]:
+    """Classic "wub" bass: a saw wave through a low-pass whose cutoff is swept by an LFO (wobble_rate Hz) between cutoff_lo and cutoff_hi."""
     n = n_samples(duration)
     osc = phase_wave([freq] * n, wave_shape)
     filtered = lowpass(osc, lfo(n, wobble_rate, cutoff_lo, cutoff_hi))
@@ -141,6 +217,7 @@ def gen_wub(freq: float, wobble_rate: float, cutoff_lo: float, cutoff_hi: float,
 
 
 def gen_wub_growl(freq: float, wobble_rate: float, duration: float = 2.0) -> list[float]:
+    """Wub with a square wave plus 15 percent noise, which adds grit (a "growl"), and a cutoff swept 150..1800 Hz."""
     n = n_samples(duration)
     osc = phase_wave([freq] * n, "square")
     noise = white_noise(n, seed=int(freq))
@@ -150,6 +227,7 @@ def gen_wub_growl(freq: float, wobble_rate: float, duration: float = 2.0) -> lis
 
 
 def gen_wub_robotic(freq: float, wobble_rate: float, duration: float = 2.0) -> list[float]:
+    """Wub from a pulse wave whose width is modulated (20..80 percent), giving a hollow, vowel-like movement."""
     n = n_samples(duration)
     pw = lfo(n, wobble_rate, 0.2, 0.8)
     phase = 0.0
@@ -162,6 +240,7 @@ def gen_wub_robotic(freq: float, wobble_rate: float, duration: float = 2.0) -> l
 
 
 def gen_sub_sine(freq: float, duration: float = 2.0, swell: bool = False) -> list[float]:
+    """Pure sine sub bass; `swell` adds a slow 0.3 Hz tremolo (level moves between 0.7 and 1.0)."""
     n = n_samples(duration)
     osc = phase_wave([freq] * n, "sine")
     if swell:
@@ -172,6 +251,7 @@ def gen_sub_sine(freq: float, duration: float = 2.0, swell: bool = False) -> lis
 
 def gen_fm_bass(carrier: float, modulator: float, index_start: float, index_end: float,
                  duration: float = 1.2) -> list[float]:
+    """Two-operator FM bass: the carrier is phase-modulated by a sine at `modulator` Hz, with the modulation index sliding from index_start to index_end (brighter at the start, calmer at the end)."""
     n = n_samples(duration)
     out = []
     c_phase = m_phase = 0.0
@@ -185,6 +265,7 @@ def gen_fm_bass(carrier: float, modulator: float, index_start: float, index_end:
 
 def gen_acid_bass(freq: float, duration: float, cutoff_start: float, cutoff_end: float,
                    pitch_drop: bool = False) -> list[float]:
+    """Squelchy saw bass whose cutoff glides from cutoff_start to cutoff_end; pitch_drop adds a quick 50 ms downward pitch swoop at the start."""
     n = n_samples(duration)
     freqs = [freq] * n
     if pitch_drop:
@@ -194,11 +275,13 @@ def gen_acid_bass(freq: float, duration: float, cutoff_start: float, cutoff_end:
     osc = phase_wave(freqs, "saw")
     cutoffs = [cutoff_start + (cutoff_end - cutoff_start) * (i / n) for i in range(n)]
     filtered = lowpass(osc, cutoffs)
+    # Crude resonance: adds 30 percent of the difference between the raw and filtered signal back in, which emphasises the region around the cutoff.
     resonant = [f + 0.3 * (o - f) for o, f in zip(osc, filtered)]  # crude resonance boost
     return apply_env(resonant, adsr(n, 0.005, 0.1, 0.5, 0.2))
 
 
 def gen_reese_bass(freq: float, detune_cents: float, duration: float = 2.0) -> list[float]:
+    """Two saw waves detuned by `detune_cents` (100 cents = a semitone) beat against each other, then a slow 3 Hz filter motion."""
     n = n_samples(duration)
     f2 = freq * (2 ** (detune_cents / 1200))
     osc1, osc2 = phase_wave([freq] * n, "saw"), phase_wave([f2] * n, "saw")
@@ -208,6 +291,7 @@ def gen_reese_bass(freq: float, detune_cents: float, duration: float = 2.0) -> l
 
 
 def gen_punch_bass(freq_start: float, freq_end: float, duration: float = 0.4) -> list[float]:
+    """Sine that falls from freq_start to freq_end (a kick-like "punch" bass)."""
     n = n_samples(duration)
     freqs = [freq_start + (freq_end - freq_start) * (i / n) for i in range(n)]
     osc = phase_wave(freqs, "sine")
@@ -215,6 +299,7 @@ def gen_punch_bass(freq_start: float, freq_end: float, duration: float = 0.4) ->
 
 
 def gen_drone(freq: float, duration: float) -> list[float]:
+    """Slow, low sine+saw drone with a very slow filter movement and a long attack and release."""
     n = n_samples(duration)
     osc1, osc2 = phase_wave([freq] * n, "sine"), phase_wave([freq] * n, "saw")
     blended = [0.6 * a + 0.4 * b for a, b in zip(osc1, osc2)]
@@ -225,6 +310,7 @@ def gen_drone(freq: float, duration: float) -> list[float]:
 def gen_lead(freq: float, wave_shape: str, duration: float, attack: float = 0.01, decay: float = 0.1,
              sustain: float = 0.8, release: float = 0.2, pulse_width: float = 0.5,
              cutoff: float | None = None) -> list[float]:
+    """General lead voice: one oscillator, optional fixed low-pass `cutoff`, and a configurable ADSR."""
     n = n_samples(duration)
     osc = phase_wave([freq] * n, wave_shape, pulse_width)
     if cutoff:
@@ -233,9 +319,11 @@ def gen_lead(freq: float, wave_shape: str, duration: float, attack: float = 0.01
 
 
 def gen_supersaw(freq: float, duration: float, voices: int = 5, detune_cents: float = 14) -> list[float]:
+    """Several saw waves spread symmetrically around `freq` by up to detune_cents, averaged: the thick "supersaw" sound."""
     n = n_samples(duration)
     tracks = []
     for v in range(voices):
+        # -1..+1 position of each voice across the detune range.
         spread = (v - (voices - 1) / 2) / ((voices - 1) / 2 or 1)
         f = freq * (2 ** (spread * detune_cents / 1200))
         tracks.append(phase_wave([f] * n, "saw"))
@@ -244,12 +332,14 @@ def gen_supersaw(freq: float, duration: float, voices: int = 5, detune_cents: fl
 
 
 def gen_pluck_lead(freq: float, duration: float, decay: float) -> list[float]:
+    """Saw note with a fast decay to silence (sustain 0), a plucked lead."""
     n = n_samples(duration)
     osc = phase_wave([freq] * n, "saw")
     return apply_env(osc, adsr(n, 0.005, decay, 0.0, 0.05))
 
 
 def gen_sync_lead(freq1: float, freq2: float, duration: float) -> list[float]:
+    """Two different oscillators (saw at freq1, square at freq2) mixed 50/50; an inexpensive imitation of hard-sync timbres."""
     n = n_samples(duration)
     o1, o2 = phase_wave([freq1] * n, "saw"), phase_wave([freq2] * n, "square")
     blended = [0.5 * a + 0.5 * b for a, b in zip(o1, o2)]
@@ -257,6 +347,7 @@ def gen_sync_lead(freq1: float, freq2: float, duration: float) -> list[float]:
 
 
 def gen_sweep_lead(freq_start: float, freq_end: float, wave_shape: str, duration: float) -> list[float]:
+    """Lead whose pitch glides exponentially from freq_start to freq_end."""
     n = n_samples(duration)
     osc = phase_wave(exp_sweep(freq_start, freq_end, n), wave_shape)
     return apply_env(osc, adsr(n, 0.01, 0.05, 0.7, 0.2))
@@ -264,6 +355,7 @@ def gen_sweep_lead(freq_start: float, freq_end: float, wave_shape: str, duration
 
 def gen_pad(freqs: list[float], wave_shape: str, duration: float, attack: float, release: float,
             tremolo: bool = False) -> list[float]:
+    """Chord pad: one oscillator per frequency in `freqs`, averaged, with optional 4 Hz tremolo and slow attack/release."""
     n = n_samples(duration)
     tracks = [phase_wave([f] * n, wave_shape) for f in freqs]
     blended = [sum(vals) / len(freqs) for vals in zip(*tracks)]
@@ -274,6 +366,7 @@ def gen_pad(freqs: list[float], wave_shape: str, duration: float, attack: float,
 
 
 def gen_airy_pad(freq: float, duration: float) -> list[float]:
+    """Sine pad blended with 20 percent low-passed noise for an "airy" texture; very slow attack (0.8 s) and release (1 s)."""
     n = n_samples(duration)
     osc = phase_wave([freq] * n, "sine")
     filtered_noise = lowpass(white_noise(n, seed=int(freq)), [1200] * n)
@@ -283,6 +376,7 @@ def gen_airy_pad(freq: float, duration: float) -> list[float]:
 
 def gen_pluck(freq: float, wave_shape: str, duration: float, decay: float,
               overtone: float | None = None) -> list[float]:
+    """Short plucked note; `overtone` (a frequency ratio) adds a 30 percent second oscillator for brightness."""
     n = n_samples(duration)
     osc = phase_wave([freq] * n, wave_shape)
     if overtone:
@@ -292,18 +386,21 @@ def gen_pluck(freq: float, wave_shape: str, duration: float, decay: float,
 
 
 def gen_laser_zap() -> list[float]:
+    """Sound effect: a square wave sweeping down from 2000 Hz to 100 Hz in a quarter second."""
     n = n_samples(0.25)
     osc = phase_wave(exp_sweep(2000, 100, n), "square")
     return apply_env(osc, adsr(n, 0.001, 0.15, 0.1, 0.075))
 
 
 def gen_laser_charge() -> list[float]:
+    """Sound effect: a rising sine sweep (200 to 2000 Hz) with a linearly rising level."""
     n = n_samples(0.6)
     osc = phase_wave(exp_sweep(200, 2000, n), "sine")
     return apply_env(osc, [i / n for i in range(n)])
 
 
 def gen_whoosh(duration: float) -> list[float]:
+    """Noise whoosh: low-pass noise whose cutoff rises over the first half and falls over the second (200 Hz to 4200 Hz and back), with an envelope proportional to `duration`."""
     n = n_samples(duration)
     half = n // 2
     cutoffs = [200 + 4000 * (i / half) for i in range(half)]
@@ -313,23 +410,27 @@ def gen_whoosh(duration: float) -> list[float]:
 
 
 def gen_alarm_siren() -> list[float]:
+    """Two-second siren: a sine whose pitch moves between 600 and 900 Hz at 0.6 Hz."""
     n = n_samples(2.0)
     osc = phase_wave(lfo(n, 0.6, 600, 900), "sine")
     return apply_env(osc, adsr(n, 0.05, 0.05, 0.9, 0.1))
 
 
 def gen_glitch_stutter() -> list[float]:
+    """Square wave chopped by a random on/off gate (10-50 ms pieces, 70 percent on). Fixed seed 42 makes the stutter pattern reproducible."""
     n = n_samples(0.6)
     osc = phase_wave([220] * n, "square")
     rng = random.Random(42)
     gate: list[float] = []
     while len(gate) < n:
+        # Length of each gate piece in samples.
         seg = rng.randint(int(0.01 * SAMPLE_RATE), int(0.05 * SAMPLE_RATE))
         gate.extend([1.0 if rng.random() > 0.3 else 0.0] * seg)
     return apply_env(osc, gate[:n])
 
 
 def gen_powerup() -> list[float]:
+    """Game "power-up" jingle: five rising square-wave notes (a major arpeggio C4-E4-G4-C5-E5) in 0.8 s total."""
     notes = [261.6, 329.6, 392.0, 523.3, 659.3]
     n_per = n_samples(0.8 / len(notes))
     out: list[float] = []
@@ -340,6 +441,7 @@ def gen_powerup() -> list[float]:
 
 
 def gen_error_buzz() -> list[float]:
+    """Low (110 Hz) square wave amplified and hard-clipped at +/-0.6 for a harsh error buzz."""
     n = n_samples(0.3)
     osc = phase_wave([110] * n, "square")
     clipped = [max(-0.6, min(0.6, v * 2.5)) for v in osc]
@@ -347,12 +449,14 @@ def gen_error_buzz() -> list[float]:
 
 
 def gen_notification_ping() -> list[float]:
+    """Short high sine ping at about C6 (1046.5 Hz)."""
     n = n_samples(0.25)
     osc = phase_wave([1046.5] * n, "sine")
     return apply_env(osc, adsr(n, 0.002, 0.1, 0.0, 0.05))
 
 
 def gen_boom_deep() -> list[float]:
+    """Deep boom: a sine falling from 150 to 30 Hz with a little noise and a long release."""
     n = n_samples(1.5)
     osc = phase_wave(exp_sweep(150, 30, n), "sine")
     noise = white_noise(n, seed=1)
@@ -361,6 +465,7 @@ def gen_boom_deep() -> list[float]:
 
 
 def gen_click_ui() -> list[float]:
+    """30 ms click of low-passed noise for interface sounds."""
     n = n_samples(0.03)
     filtered = lowpass(white_noise(n, seed=2), [6000] * n)
     return apply_env(filtered, adsr(n, 0.001, 0.015, 0.0, 0.012))
@@ -376,6 +481,7 @@ def gen_coin() -> list[float]:
     return out
 
 
+# Later "rounds" were added over time; each section below groups related recipes (round 2: more variety and a tunes category, round 3: genre production techniques, round 4: more techniques, round 5: standard instruments built with note catalogs, round 6: funk and psychedelic, round 7: rap-production tags, round 8: foley and country/rock/metal).
 # --- round 2: more variety + a "tunes" category ------------------------
 
 def gen_wub_metallic(freq: float, wobble_rate: float, duration: float = 2.0) -> list[float]:
@@ -610,6 +716,7 @@ def gen_pluck_rubber(freq: float, duration: float = 0.4) -> list[float]:
     return apply_env(osc, adsr(n, 0.002, 0.15, 0.0, 0.04))
 
 
+# Note-name -> frequency table (Hz, equal temperament, A4 = 440) used by gen_tune for the "tunes" category.
 NOTE = {
     "C3": 130.81, "D3": 146.83, "E3": 164.81, "F3": 174.61, "G3": 196.00, "A3": 220.00, "B3": 246.94,
     "C4": 261.63, "D4": 293.66, "E4": 329.63, "F4": 349.23, "G4": 392.00, "A4": 440.00, "B4": 493.88,
@@ -960,18 +1067,22 @@ def gen_synth_brass_stab(freqs: list[float], duration: float = 0.6) -> list[floa
 
 # --- round 5: full standard-instrument coverage (piano/guitar/violin/drums) --
 
+# Pitch-class names used to print MIDI note numbers, so files are named like "C#4.wav".
 NOTE_NAMES_MIDI = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
 def midi_note_name(midi: int) -> str:
+    """Convert a MIDI note number to a name such as "A4" (note 69); octave numbering where MIDI 60 is C4."""
     return f"{NOTE_NAMES_MIDI[midi % 12]}{midi // 12 - 1}"
 
 
 def midi_freq(midi: int) -> float:
+    """Frequency in Hz of a MIDI note: 440 * 2^((n - 69) / 12) (equal temperament, A4 = 440 Hz)."""
     return 440.0 * (2 ** ((midi - 69) / 12))
 
 
 def gen_piano_note(freq: float, duration: float = 1.8) -> list[float]:
+    """Simple piano-like tone: a sine plus two slightly inharmonic overtones (ratios 2.01 and 3.02, which makes it sound less synthetic) with a quick decay to a low sustain."""
     n = n_samples(duration)
     fundamental = phase_wave([freq] * n, "sine")
     overtone2 = phase_wave([freq * 2.01] * n, "sine")
@@ -981,6 +1092,7 @@ def gen_piano_note(freq: float, duration: float = 1.8) -> list[float]:
 
 
 def build_piano_catalog() -> dict[str, list[float]]:
+    """One file per piano key (MIDI 21 to 108, A0 to C8) as {"instruments/piano_full/<note>.wav": samples}."""
     # standard 88-key range: A0 (MIDI 21) .. C8 (MIDI 108)
     return {
         f"instruments/piano_full/{midi_note_name(midi)}.wav": gen_piano_note(midi_freq(midi))
@@ -989,6 +1101,14 @@ def build_piano_catalog() -> dict[str, list[float]]:
 
 
 def karplus_strong(freq: float, duration: float, seed: int = 0, damping: float = 0.5) -> list[float]:
+    """Plucked-string synthesis (Karplus-Strong): a burst of noise circulates in a delay line one period long and is averaged with its neighbour each pass, so high frequencies die first, like a real string.
+
+    Args:
+        freq: pitch in Hz (the delay line holds SAMPLE_RATE/freq samples).
+        duration: seconds.
+        seed: noise seed (different strings should use different seeds).
+        damping: 0..1 weight of the current sample in the averaging; lower values smooth faster.
+    """
     # classic Karplus-Strong plucked-string algorithm: a noise burst decaying through a short delay loop
     n = n_samples(duration)
     period_n = max(2, int(SAMPLE_RATE / freq))
@@ -999,6 +1119,7 @@ def karplus_strong(freq: float, duration: float, seed: int = 0, damping: float =
     prev = buffer[0]
     for _ in range(n):
         cur = buffer[idx]
+        # The 0.996 factor adds slow loss so the note decays instead of ringing forever.
         avg = (damping * cur + (1 - damping) * prev) * 0.996
         buffer[idx] = avg
         out.append(cur)
@@ -1008,6 +1129,7 @@ def karplus_strong(freq: float, duration: float, seed: int = 0, damping: float =
 
 
 def gen_guitar_chord(freqs: list[float], duration: float = 1.5, strum_ms: float = 15.0) -> list[float]:
+    """Strummed chord: one Karplus-Strong string per frequency, each delayed by `strum_ms` more than the last, summed and divided by the string count to avoid clipping."""
     n = n_samples(duration)
     out = [0.0] * n
     stagger = n_samples(strum_ms / 1000)
@@ -1021,6 +1143,7 @@ def gen_guitar_chord(freqs: list[float], duration: float = 1.5, strum_ms: float 
     return out
 
 
+# Chord name -> semitone offsets above the root (major, minor, dominant 7, major 7, minor 7, sus2, sus4, diminished).
 GUITAR_CHORD_QUALITIES = {
     "maj": [0, 4, 7],
     "min": [0, 3, 7],
@@ -1031,10 +1154,12 @@ GUITAR_CHORD_QUALITIES = {
     "sus4": [0, 5, 7],
     "dim": [0, 3, 6],
 }
+# Root names starting at E (the low guitar string) so index i is i semitones above E2.
 GUITAR_ROOT_NAMES = ["E", "F", "F#", "G", "G#", "A", "A#", "B", "C", "C#", "D", "D#"]
 
 
 def build_guitar_catalog() -> dict[str, list[float]]:
+    """96 chord samples (12 roots x 8 qualities) as {"instruments/guitar_chords/<root>_<quality>.wav": samples}."""
     # 12 roots x 8 standard chord qualities = 96 chords. "Every chord" isn't a finite
     # target (extensions/altered voicings are unbounded) -- this covers the standard set.
     catalog = {}
@@ -1049,6 +1174,7 @@ def build_guitar_catalog() -> dict[str, list[float]]:
 
 
 def gen_violin_note(freq: float, duration: float = 1.8) -> list[float]:
+    """Violin-like note: a saw with 5.5 Hz vibrato (+/-0.08 semitone), low-passed at 8 x the pitch, with a slow attack for a bowed feel."""
     n = n_samples(duration)
     vibrato_freqs = [freq * (2 ** (0.08 * math.sin(2 * math.pi * 5.5 * (i / SAMPLE_RATE)) / 12)) for i in range(n)]
     osc = phase_wave(vibrato_freqs, "saw")
@@ -1057,6 +1183,7 @@ def gen_violin_note(freq: float, duration: float = 1.8) -> list[float]:
 
 
 def build_violin_catalog() -> dict[str, list[float]]:
+    """Chromatic violin range G3 to C7 (MIDI 55 to 96), one file per note."""
     # standard practical violin range: G3 (MIDI 55) .. C7 (MIDI 96), full chromatic
     return {
         f"instruments/violin_full/{midi_note_name(midi)}.wav": gen_violin_note(midi_freq(midi))
@@ -1358,6 +1485,10 @@ def gen_double_bass_roll(hits: int, hit_dur: float = 0.08, gap: float = 0.02) ->
 
 
 def build_catalog() -> dict[str, list[float]]:
+    """Return the whole sound library as {relative path under SAMPLES_ROOT: float samples}.
+
+    Keys are "<category>/<group>/<name>.wav" and decide where the DAW shows each sound. Values are rendered now, so building the catalog does the heavy synthesis work (this is the slow step of the script).
+    """
     catalog = {
         # --- synth/wubs ---
         "synth/wubs/wub_slow_a.wav": gen_wub(55.00, 2.0, 200, 1800, 2.5),
@@ -1774,6 +1905,7 @@ def build_catalog() -> dict[str, list[float]]:
 
 
 def main() -> None:
+    """Render every catalog entry to a WAV file, then re-open each file to check it has frames and the expected sample rate, and print how many were written."""
     catalog = build_catalog()
     for relative_path, samples in catalog.items():
         write_wav(relative_path, samples)
