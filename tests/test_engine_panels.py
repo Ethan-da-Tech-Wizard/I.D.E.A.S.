@@ -1,14 +1,18 @@
 # ==============================================================================
-# Program: test_engine_panels.py
+# Program: tests/test_engine_panels.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Inspector and hierarchy panels for the game engine, displaying entity scene trees, component properties, and live physics parameters.
+# Purpose: tests the dock panels that mirror an EngineWorkspace: the scene tree (hierarchy view that
+# selects viewport nodes) and the properties panel (form that applies edits through the workspace),
+# plus the factory table used to dock them.
+# Run: python3 -m pytest tests/test_engine_panels.py -q     (needs PySide6)
 # ==============================================================================
 
 from __future__ import annotations
 
 import os
 
+# Headless Qt; set before QApplication exists.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
@@ -19,9 +23,12 @@ from app.ui.engine.viewport import SceneNode
 
 
 def ensure_app() -> QApplication:
+    """Return the shared QApplication, creating one if no earlier test did."""
     return QApplication.instance() or QApplication([])
 
 
+# Two-way link, direction 1: the tree shows nested nodes by display name, and clicking an item
+# selects that node in the viewport.
 def test_scene_tree_reflects_live_hierarchy_and_selects_viewport_node() -> None:
     ensure_app()
     workspace = EngineWorkspace()
@@ -36,6 +43,7 @@ def test_scene_tree_reflects_live_hierarchy_and_selects_viewport_node() -> None:
     assert workspace.viewport.selected_node_id == "child"
 
 
+# Direction 2: selecting in the viewport highlights the matching tree item (node id is stored in UserRole).
 def test_scene_tree_follows_viewport_selection() -> None:
     ensure_app()
     workspace = EngineWorkspace()
@@ -47,6 +55,7 @@ def test_scene_tree_follows_viewport_selection() -> None:
     assert panel.currentItem().data(0, Qt.ItemDataRole.UserRole) == node.node_id
 
 
+# Creating a node through the workspace updates the open tree automatically (it listens for changes).
 def test_scene_tree_refreshes_when_workspace_changes() -> None:
     ensure_app()
     workspace = EngineWorkspace()
@@ -58,6 +67,8 @@ def test_scene_tree_refreshes_when_workspace_changes() -> None:
     assert panel.topLevelItemCount() == before + 1
 
 
+# The panel does not mutate nodes itself: apply_changes sends the form values to the workspace,
+# which updates both scene node and physics data.
 def test_properties_panel_applies_edits_through_workspace() -> None:
     ensure_app()
     workspace = EngineWorkspace()
@@ -75,6 +86,7 @@ def test_properties_panel_applies_edits_through_workspace() -> None:
     assert edited.mass == 7.0
 
 
+# The workspace supplies one factory per dock panel name, each returning a panel bound to this workspace.
 def test_workspace_exposes_live_dock_panel_factories() -> None:
     ensure_app()
     workspace = EngineWorkspace()

@@ -1,8 +1,11 @@
 # ==============================================================================
-# Program: test_engine_integration.py
+# Program: tests/test_engine_integration.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Automated unit and integration test suite validating subsystem invariants, error handling, edge cases, and component behavior.
+# Purpose: integration tests for the game-engine workspace (app/ui/engine): that its modules import,
+# that EngineWorkspace builds and wires viewport, physics world and inspector together, and that
+# scene import/export, undo/redo and size/format limits behave. Qt runs headless (offscreen).
+# Run: python3 -m pytest tests/test_engine_integration.py -q     (needs PySide6)
 # ==============================================================================
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Selects Qt's offscreen platform; must run before QApplication is created or Qt imports a display plugin.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
@@ -18,6 +22,8 @@ from PySide6.QtWidgets import QApplication
 from app.security import SecurityError
 
 
+# Smoke test for circular imports and missing dependencies in the engine package. The imports are
+# local so a failure shows up as this test; noqa silences the unused-import lint.
 def test_engine_modules_import_cleanly() -> None:
     import app.ui.engine.ecs  # noqa: F401
     import app.ui.engine.physics  # noqa: F401
@@ -26,6 +32,7 @@ def test_engine_modules_import_cleanly() -> None:
     import app.ui.engine.workspace  # noqa: F401
 
 
+# The workspace builds with a default camera frame node in its scene graph and three tabs; `QApplication.instance() or QApplication([])` reuses an existing app.
 def test_engine_workspace_instantiates() -> None:
     from app.ui.engine import EngineWorkspace
 
@@ -37,6 +44,9 @@ def test_engine_workspace_instantiates() -> None:
     assert workspace.tabs.count() == 3
 
 
+# Scenario: a rectangle high in the world, gravity 60, 0.5 s step. After stepping, the scene node's
+# y must have increased (screen y grows downward), proving physics results are copied back to the
+# scene graph that the viewport draws.
 def test_engine_workspace_creates_objects_and_steps_physics() -> None:
     from app.ui.engine import EngineWorkspace
 
@@ -45,6 +55,7 @@ def test_engine_workspace_creates_objects_and_steps_physics() -> None:
     node = workspace.create_scene_node("rectangle")
     node.x = 400.0
     node.y = 10.0
+    # The physics world is built from the scene, so it must be rebuilt after hand-editing node fields.
     workspace._rebuild_world_from_scene()
 
     workspace.gravity_input.setValue(60.0)
@@ -53,6 +64,8 @@ def test_engine_workspace_creates_objects_and_steps_physics() -> None:
     assert workspace.viewport.scene_graph.find_node(node.node_id).y > 10.0
 
 
+# Saving the workspace state and loading it into a fresh workspace must restore nodes and the
+# selected node (this is what reopening a project does).
 def test_engine_workspace_state_round_trip() -> None:
     from app.ui.engine import EngineWorkspace
 
@@ -69,6 +82,8 @@ def test_engine_workspace_state_round_trip() -> None:
     assert restored.viewport.get_state()["selected_node_id"] == node.node_id
 
 
+# One inspector update changes both scene-node fields (name, position) and the physics component
+# (mass, velocity, restitution, layer), because the workspace keeps scene nodes and ECS bodies in sync.
 def test_engine_workspace_inspector_update_and_physics_metadata() -> None:
     from app.ui.engine import EngineWorkspace
     from app.ui.engine.ecs import RigidBody
@@ -77,6 +92,7 @@ def test_engine_workspace_inspector_update_and_physics_metadata() -> None:
     workspace = EngineWorkspace()
     node = workspace.create_scene_node("rectangle")
 
+    # Returns True when something changed.
     assert workspace.update_selected_node(
         display_name="Crate",
         x=200.0,
@@ -94,6 +110,7 @@ def test_engine_workspace_inspector_update_and_physics_metadata() -> None:
     )
 
     edited = workspace.viewport.scene_graph.find_node(node.node_id)
+    # Each node maps to an ECS entity id; the test reads the RigidBody to verify physics metadata.
     entity = workspace._node_entities[node.node_id]
     body = workspace.world.get_component(entity, RigidBody)
     assert edited.display_name == "Crate"
@@ -104,6 +121,8 @@ def test_engine_workspace_inspector_update_and_physics_metadata() -> None:
     assert body.collision_layer == 3
 
 
+# History workflow: create then undo removes the node, redo restores it; duplicate and delete
+# operate on the selected node and keep the scene graph consistent.
 def test_engine_workspace_undo_redo_duplicate_delete() -> None:
     from app.ui.engine import EngineWorkspace
 
@@ -124,6 +143,7 @@ def test_engine_workspace_undo_redo_duplicate_delete() -> None:
     assert workspace.viewport.scene_graph.find_node(duplicate.node_id) is None
 
 
+# Export to a *.ideas-scene file and import into a different workspace; the node must reappear.
 def test_engine_scene_import_export_round_trip(tmp_path: Path) -> None:
     from app.ui.engine import EngineWorkspace
 
@@ -139,6 +159,7 @@ def test_engine_scene_import_export_round_trip(tmp_path: Path) -> None:
     assert restored.viewport.scene_graph.find_node(node.node_id) is not None
 
 
+# Only the dedicated .ideas-scene suffix is accepted, so arbitrary JSON files are not parsed as scenes.
 def test_engine_scene_import_rejects_bad_suffix(tmp_path: Path) -> None:
     from app.ui.engine.scene_io import import_scene_file
 
@@ -149,6 +170,7 @@ def test_engine_scene_import_rejects_bad_suffix(tmp_path: Path) -> None:
         import_scene_file(str(bad))
 
 
+# A scene file with two nodes sharing an id would corrupt lookups and physics mapping; it is rejected on import.
 def test_engine_scene_import_rejects_duplicate_ids(tmp_path: Path) -> None:
     from app.ui.engine.scene_io import import_scene_file
 
@@ -162,6 +184,8 @@ def test_engine_scene_import_rejects_duplicate_ids(tmp_path: Path) -> None:
         import_scene_file(str(scene))
 
 
+# Undo history stores serialised snapshots; a snapshot over max_state_bytes (32 here, 128 supplied)
+# is refused so a huge scene cannot exhaust memory.
 def test_engine_history_rejects_oversized_state() -> None:
     from app.ui.engine.history import EngineHistory
 
@@ -170,6 +194,7 @@ def test_engine_history_rejects_oversized_state() -> None:
         history.record({"large": "x" * 128})
 
 
+# Regression guard: MainWindow must keep its build_engine_mode hook, or the Engine mode button would do nothing.
 def test_application_module_wires_up_engine_builder() -> None:
     from app import application
 

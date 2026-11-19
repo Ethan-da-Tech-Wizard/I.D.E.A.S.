@@ -1,14 +1,17 @@
 # ==============================================================================
-# Program: test_engine_viewport.py
+# Program: tests/test_engine_viewport.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Hardware-accelerated OpenGL/Vulkan rendering viewport for live 2D/3D game scene inspection, camera controls, and entity manipulation gizmos.
+# Purpose: tests app/ui/engine/viewport.py: SceneNode validation, SceneGraph storage/serialisation
+# with safety limits, and ViewportWidget camera, selection, movement, duplication and grid snapping.
+# Run: python3 -m pytest tests/test_engine_viewport.py -q     (needs PySide6)
 # ==============================================================================
 
 from __future__ import annotations
 
 import os
 
+# Headless Qt; set before the Qt imports.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
@@ -20,13 +23,16 @@ from app.ui.engine.viewport import MAX_POLYGON_POINTS, MAX_SCENE_DEPTH, SceneGra
 
 
 @pytest.fixture
+
 def app() -> QApplication:
+    """Return the shared QApplication (one per process), creating it if needed."""
     existing = QApplication.instance()
     if existing is not None:
         return existing
     return QApplication([])
 
 
+# Nodes are found by id at any depth (child inside root), removal reports success/failure.
 def test_scene_graph_add_find_and_remove_node() -> None:
     graph = SceneGraph()
     graph.add_node(SceneNode("root", children=[SceneNode("child", shape="circle")]))
@@ -38,6 +44,7 @@ def test_scene_graph_add_find_and_remove_node() -> None:
     assert graph.remove_node("missing") is False
 
 
+# Ids must be unique across the graph, since selection and physics mapping look nodes up by id.
 def test_scene_graph_rejects_duplicate_node_ids() -> None:
     graph = SceneGraph()
     graph.add_node(SceneNode("node"))
@@ -46,6 +53,9 @@ def test_scene_graph_rejects_duplicate_node_ids() -> None:
         graph.add_node(SceneNode("node"))
 
 
+# Each bad value must raise SecurityError at construction: unknown shape, negative size, malformed
+# colour, coordinates beyond the world bound (2,000,000), restitution outside 0..1 and too many
+# polygon points. These limits stop corrupt or hostile scene files from reaching the renderer.
 def test_scene_node_validation() -> None:
     with pytest.raises(SecurityError):
         SceneNode("bad", shape="sprite")
@@ -61,6 +71,8 @@ def test_scene_node_validation() -> None:
         SceneNode("bad", points=[(0.0, 0.0)] * (MAX_POLYGON_POINTS + 1))
 
 
+# to_dict/load_state keeps every field, including polygon points (tuples come back as float
+# tuples) and physics fields.
 def test_scene_graph_state_round_trip() -> None:
     graph = SceneGraph()
     graph.add_node(
@@ -92,27 +104,39 @@ def test_scene_graph_state_round_trip() -> None:
     assert node.collision_layer == 2
 
 
+# Coordinate maths: with offset (10, 20) and zoom 2 plus a pan of (5, -10), world (30, 40) maps to
+# screen (75, 90) and back. Zooming about a point must keep the world point under the cursor fixed.
 def test_viewport_pan_zoom_and_coordinate_round_trip(app: QApplication) -> None:
+    # Constructing a widget needs the `app` fixture (QApplication) even though nothing is shown.
     viewport = ViewportWidget()
+    # Fixed size so world/screen conversions are deterministic.
     viewport.resize(400, 300)
+    # set_view(offset_x, offset_y, zoom): the camera is set directly instead of through mouse events.
     viewport.set_view(10, 20, 2.0)
+    # Pan moves the camera by a screen-space delta.
     viewport.pan_by(5, -10)
 
+    # The asserted numbers pin the mapping from world to screen (camera offset and zoom applied).
     screen = viewport.world_to_screen(QPointF(30, 40))
     assert screen == QPointF(75, 90)
     assert viewport.screen_to_world(screen) == QPointF(30, 40)
 
+    # Cursor-anchored zoom invariant: the world point under (100, 100) must not move when zooming.
     before = viewport.screen_to_world(QPointF(100, 100))
+    # Zoom doubles around the anchor point.
     viewport.zoom_by(2.0, QPointF(100, 100))
     after = viewport.screen_to_world(QPointF(100, 100))
     assert after == before
 
 
+# Camera offset/zoom and nodes survive get_state/load_state (project save and load).
 def test_viewport_state_round_trip(app: QApplication) -> None:
     viewport = ViewportWidget()
     viewport.set_view(12, 34, 1.5)
+    # Hex colours are normalised/validated by SceneNode; green is arbitrary.
     viewport.add_node(SceneNode("rect", x=1, y=2, color="#00FF00"))
 
+    # A second viewport stands in for "after reopening the project".
     restored = ViewportWidget()
     restored.load_state(viewport.get_state())
 
@@ -122,29 +146,37 @@ def test_viewport_state_round_trip(app: QApplication) -> None:
     assert restored.scene_graph.find_node("rect") is not None
 
 
+# Zoom is limited to 0.1..8: absurd values from the UI or a file cannot make the view degenerate.
 def test_viewport_clamps_zoom(app: QApplication) -> None:
     viewport = ViewportWidget()
+    # Far above the upper bound: expect clamping to 8.0.
     viewport.set_view(0, 0, 100.0)
     assert viewport.get_state()["zoom_level"] == pytest.approx(8.0)
+    # Far below the lower bound: expect clamping to 0.1.
     viewport.set_view(0, 0, 0.001)
     assert viewport.get_state()["zoom_level"] == pytest.approx(0.1)
 
 
+# Overlapping nodes: the later (front) one wins the hit test. Moving the selection shifts its position by the delta.
 def test_viewport_selection_hit_test_and_movement(app: QApplication) -> None:
     viewport = ViewportWidget()
+    # "back" is large and added first (drawn first); "front" is small and drawn on top.
     viewport.add_node(SceneNode("back", x=0, y=0, width=100, height=100))
     viewport.add_node(SceneNode("front", x=10, y=10, width=20, height=20))
 
+    # (15, 15) lies inside both rectangles, so the topmost (last added) node must be returned.
     hit = viewport.hit_test(QPointF(15, 15))
     assert hit is not None
     assert hit.node_id == "front"
 
+    # Movement acts on the selected node only.
     viewport.select_node("front")
     assert viewport.move_selected_by(5, 10) is True
     assert viewport.scene_graph.find_node("front").x == pytest.approx(15.0)
     assert viewport.scene_graph.find_node("front").y == pytest.approx(20.0)
 
 
+# Moving a parent also shifts every child by the same delta (positions stay absolute).
 def test_parent_movement_moves_children(app: QApplication) -> None:
     viewport = ViewportWidget()
     child = SceneNode("child", x=10, y=10)
@@ -160,6 +192,7 @@ def test_parent_movement_moves_children(app: QApplication) -> None:
     assert child.y == pytest.approx(17)
 
 
+# Duplicating copies the whole subtree with "_copy" suffixed ids (so ids stay unique); delete removes the selection.
 def test_duplicate_and_delete_selected(app: QApplication) -> None:
     viewport = ViewportWidget()
     viewport.add_node(SceneNode("node", children=[SceneNode("child")]))
@@ -174,6 +207,7 @@ def test_duplicate_and_delete_selected(app: QApplication) -> None:
     assert viewport.scene_graph.find_node("node_copy") is None
 
 
+# Duplicate ids nested in children are also detected on load.
 def test_scene_graph_load_rejects_duplicate_child_ids() -> None:
     graph = SceneGraph()
     with pytest.raises(SecurityError, match="Duplicate"):
@@ -192,6 +226,7 @@ def test_scene_graph_load_rejects_duplicate_child_ids() -> None:
         )
 
 
+# A chain deeper than MAX_SCENE_DEPTH is refused ("too deep") to prevent recursion blow-ups from crafted files.
 def test_scene_graph_load_rejects_excessive_depth() -> None:
     state = {"node_id": "root"}
     current = state
@@ -205,10 +240,13 @@ def test_scene_graph_load_rejects_excessive_depth() -> None:
         graph.load_state({"nodes": [state]})
 
 
+# Grid 10 with snapping on: a move of (3, 3) from (3, 4) lands on the grid point (10, 10); grid
+# settings and selection are persisted in the state.
 def test_viewport_grid_snap_state_round_trip(app: QApplication) -> None:
     viewport = ViewportWidget()
     viewport.add_node(SceneNode("node", x=3, y=4))
     viewport.select_node("node")
+    # Arguments: grid visible, cell size 10, snap on. Snapping rounds the node's new position to the nearest cell corner: (6, 7) -> (10, 10).
     viewport.set_grid(True, 10.0, True)
     viewport.move_selected_by(3, 3)
 
@@ -222,6 +260,8 @@ def test_viewport_grid_snap_state_round_trip(app: QApplication) -> None:
     assert restored.get_state()["selected_node_id"] == "node"
 
 
+# zoom_to_fit enlarges the view to frame the content (zoom above 1 for a small node in a small
+# view); reset_camera returns to the origin at zoom 1.
 def test_viewport_reset_camera_and_zoom_to_fit(app: QApplication) -> None:
     viewport = ViewportWidget()
     viewport.resize(300, 200)
