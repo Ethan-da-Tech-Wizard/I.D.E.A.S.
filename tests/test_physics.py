@@ -1,8 +1,11 @@
 # ==============================================================================
-# Program: test_physics.py
+# Program: tests/test_physics.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: 2D/3D physics simulation engine managing rigid bodies, collision detection, gravity, forces, and raycasting.
+# Purpose: tests app/ui/engine/physics.py (PhysicsSystem) on a bare ECS World: gravity integration,
+# axis-aligned bounding box (AABB) overlap, collision pair detection, resolution for static and
+# dynamic bodies, floor bounds, and rigid-body material fields (gravity scale, damping, layers).
+# Run: python3 -m pytest tests/test_physics.py -q
 # ==============================================================================
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from app.ui.engine.ecs import Collider, RigidBody, Transform, World
 from app.ui.engine.physics import PhysicsSystem
 
 
+# Helper: create an entity with Transform, RigidBody and Collider (default 10x10 box) and return its id.
 def add_body(
     world: World,
     x: float,
@@ -23,6 +27,7 @@ def add_body(
     width: float = 10.0,
     height: float = 10.0,
 ) -> int:
+    """Add a physics-ready entity to `world` at (x, y) and return its entity id."""
     entity = world.create_entity()
     world.add_component(entity, Transform(x=x, y=y))
     world.add_component(entity, RigidBody(velocity_x=velocity_x, velocity_y=velocity_y, is_static=is_static))
@@ -30,6 +35,8 @@ def add_body(
     return entity
 
 
+# Semi-implicit Euler check with gravity 10 and two 0.5 s steps: velocity 10, and position 7.5
+# (= 0.5*5 + 0.5*10: each step moves by the updated velocity times dt). The floor is far away so it is not hit.
 def test_gravity_applies_over_multiple_frames() -> None:
     world = World()
     entity = add_body(world, 0, 0)
@@ -44,6 +51,8 @@ def test_gravity_applies_over_multiple_frames() -> None:
     assert transform.y == pytest.approx(7.5)
 
 
+# Boxes are 10 wide and measured from the Transform position: 9 apart overlaps, exactly 10 apart
+# only touches and counts as NOT overlapping (strict inequality avoids resting bodies colliding forever).
 def test_aabb_overlap_detection_cases() -> None:
     physics = PhysicsSystem()
     collider = Collider(width=10, height=10)
@@ -53,6 +62,7 @@ def test_aabb_overlap_detection_cases() -> None:
     assert physics.aabb_overlaps(Transform(0, 0), collider, Transform(11, 0), collider) is False
 
 
+# Only the two nearby bodies produce a pair, ordered by entity id; the far body is ignored.
 def test_detect_collisions_returns_pairs() -> None:
     world = World()
     first = add_body(world, 0, 0)
@@ -65,6 +75,8 @@ def test_detect_collisions_returns_pairs() -> None:
     assert [(pair.first, pair.second) for pair in pairs] == [(first, second)]
 
 
+# A falling body overlapping a static one is pushed back to the static's surface (y = 15 - 10 = 5)
+# and its downward velocity is zeroed, so it rests on the platform instead of sinking in.
 def test_dynamic_static_collision_snaps_to_boundary_and_stops_velocity() -> None:
     world = World()
     dynamic = add_body(world, 0, 9, velocity_y=20)
@@ -77,6 +89,9 @@ def test_dynamic_static_collision_snaps_to_boundary_and_stops_velocity() -> None
     assert world.get_component(dynamic, RigidBody).velocity_y == pytest.approx(0.0)
 
 
+# Two moving bodies (mass 2 at +10, mass 1 at -5) exchange velocity scaled by the mass ratio. The
+# expected values (-0.625 and 5.0) are the engine's simplified rule, pinned so that changes to the
+# collision response are deliberate. dt is 0 so only the collision step runs, not movement.
 def test_dynamic_dynamic_collision_swaps_velocities_scaled_by_mass() -> None:
     world = World()
     first = add_body(world, 0, 0, velocity_x=10)
@@ -91,6 +106,7 @@ def test_dynamic_dynamic_collision_swaps_velocities_scaled_by_mass() -> None:
     assert world.get_component(second, RigidBody).velocity_x == pytest.approx(5.0)
 
 
+# Floor at y=100: a 10-high body that dips below is moved so its bottom rests on the floor (y=90) and its downward velocity is cleared.
 def test_world_boundary_enforcement() -> None:
     world = World()
     entity = add_body(world, 0, 95, velocity_y=20, height=10)
@@ -102,6 +118,10 @@ def test_world_boundary_enforcement() -> None:
     assert world.get_component(entity, RigidBody).velocity_y <= 0.0
 
 
+# Material fields: gravity_scale and damping (both 0.5) reduce the vertical and horizontal speed
+# after one 1 s step to the asserted 5.0 each (this pins the current integration formula), and
+# bodies on different collision layers do not collide even though they overlap, so
+# physics.collisions stays empty.
 def test_rigidbody_material_controls_gravity_damping_and_layer() -> None:
     world = World()
     first = add_body(world, 0, 0)

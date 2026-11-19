@@ -1,8 +1,12 @@
 # ==============================================================================
-# Program: test_theme_engine.py
+# Program: tests/test_theme_engine.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Dynamic Qt stylesheet and palette theme engine supporting dark/light modes, neon accent presets, and custom CSS styling across the entire interface.
+# Purpose: tests app/ui/themes/theme_engine.py (ThemeEngine): which themes exist (built-ins plus
+# .qss files in a themes folder), loading stylesheet text, remembering the last choice in
+# theme.json, and importing/exporting custom themes. No QApplication is needed: the tests never
+# apply a stylesheet to a live window.
+# Run: python3 -m pytest tests/test_theme_engine.py -q     (needs PySide6, imported by app.ui)
 # ==============================================================================
 
 from __future__ import annotations
@@ -16,6 +20,8 @@ from app.security import SecurityError
 from app.ui.themes import ThemeEngine
 
 
+# The list is "default", the built-ins ("dark", "light") and every *.qss in the folder, sorted;
+# other file types (notes.txt) are ignored.
 def test_theme_discovery_includes_default_builtins_and_custom(tmp_path: Path) -> None:
     themes_dir = tmp_path / "themes"
     themes_dir.mkdir()
@@ -27,6 +33,7 @@ def test_theme_discovery_includes_default_builtins_and_custom(tmp_path: Path) ->
     assert engine.list_themes() == ["dark", "default", "light", "matrix"]
 
 
+# Built-in themes return real stylesheet text ("#1e1e1e" is the dark background colour).
 def test_load_default_and_builtin_theme() -> None:
     engine = ThemeEngine()
 
@@ -34,6 +41,8 @@ def test_load_default_and_builtin_theme() -> None:
     assert "#1e1e1e" in engine.load_theme("dark")
 
 
+# apply_theme records the choice, and a new engine on the same config folder reads it back. Works
+# without a running QApplication, which keeps it testable.
 def test_apply_theme_persists_preference_without_qapplication(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     engine = ThemeEngine(config_dir=str(config_dir))
@@ -45,6 +54,7 @@ def test_apply_theme_persists_preference_without_qapplication(tmp_path: Path) ->
     assert restored.load_saved_preference() == "light"
 
 
+# Unknown theme names raise "Theme not found" rather than returning an empty stylesheet.
 def test_missing_theme_raises_security_error(tmp_path: Path) -> None:
     engine = ThemeEngine(config_dir=str(tmp_path / "config"))
 
@@ -52,6 +62,7 @@ def test_missing_theme_raises_security_error(tmp_path: Path) -> None:
         engine.load_theme("missing")
 
 
+# Theme names become file names: "../dark" (traversal) and "dark.qss" (extension included) are invalid.
 def test_theme_name_rejects_traversal_and_extensions(tmp_path: Path) -> None:
     engine = ThemeEngine(config_dir=str(tmp_path / "config"))
 
@@ -62,6 +73,7 @@ def test_theme_name_rejects_traversal_and_extensions(tmp_path: Path) -> None:
         engine.load_theme("dark.qss")
 
 
+# A theme.json that names a theme that no longer exists must not break start-up; fall back to "default".
 def test_invalid_saved_preference_falls_back_to_default(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -73,6 +85,8 @@ def test_invalid_saved_preference_falls_back_to_default(tmp_path: Path) -> None:
     assert engine.load_saved_preference() == "default"
 
 
+# Importing copies the file into the themes folder under the chosen name; exporting writes it back
+# out. Both copies must be byte-identical to the source, and the theme then appears in the list.
 def test_import_and_export_custom_theme(tmp_path: Path) -> None:
     source = tmp_path / "source.qss"
     source.write_text("QWidget { color: #123456; }\n", encoding="utf-8")
@@ -88,6 +102,7 @@ def test_import_and_export_custom_theme(tmp_path: Path) -> None:
     assert "custom" in engine.list_themes()
 
 
+# Only .qss sources are accepted and the chosen name must be a safe bare name ("../custom" is refused).
 def test_import_theme_rejects_bad_suffix_and_name(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("not qss", encoding="utf-8")

@@ -1,8 +1,12 @@
 # ==============================================================================
-# Program: test_security.py
+# Program: tests/test_security.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Automated unit and integration test suite validating subsystem invariants, error handling, edge cases, and component behavior.
+# Purpose: tests app/security.py, the app's central validation layer: the restricted "script"
+# language (only literal play_sample calls are allowed), sample path resolution, safe text reading,
+# and the private file permissions of the database. These are the guarantees that let the app run
+# user/AI supplied snippets without executing arbitrary Python.
+# Run: python3 -m pytest tests/test_security.py -q
 # ==============================================================================
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ from app.security import (
 )
 
 
+# Positive case: both quote styles of play_sample("path") are parsed into a list of sample paths;
+# parsing is static (AST based), nothing is executed.
 def test_safe_script_allows_only_literal_play_sample_calls() -> None:
     assert parse_safe_script("play_sample('sfx/impact.wav')\nplay_sample(\"sfx/riser.wav\")") == [
         "sfx/impact.wav",
@@ -29,6 +35,8 @@ def test_safe_script_allows_only_literal_play_sample_calls() -> None:
     ]
 
 
+# Each entry is a different attack or unsupported construct: importing/removing files, __import__
+# tricks, open(), an infinite loop (denial of service) and a traversal path in an otherwise legal call.
 @pytest.mark.parametrize(
     "code",
     [
@@ -39,6 +47,9 @@ def test_safe_script_allows_only_literal_play_sample_calls() -> None:
         "play_sample('../../secret.wav')",
     ],
 )
+
+# Every sample above must raise SecurityError AND must not have played anything (the callback list
+# stays empty), proving validation happens before any side effect.
 def test_safe_script_blocks_malicious_python(code: str) -> None:
     played: list[str] = []
     with pytest.raises(SecurityError):
@@ -46,6 +57,8 @@ def test_safe_script_blocks_malicious_python(code: str) -> None:
     assert played == []
 
 
+# A name inside the samples folder resolves to its full path; "../secret.wav" would leave the
+# folder and must be refused.
 def test_resolve_sample_path_blocks_escape(tmp_path: Path) -> None:
     samples = tmp_path / "samples"
     samples.mkdir()
@@ -56,6 +69,8 @@ def test_resolve_sample_path_blocks_escape(tmp_path: Path) -> None:
         resolve_sample_path(str(samples), "../secret.wav")
 
 
+# Listing is recursive, returns posix-style relative names sorted alphabetically, and ignores
+# non-WAV files (the .mp3 is skipped).
 def test_list_bundled_samples_returns_only_safe_wavs(tmp_path: Path) -> None:
     samples = tmp_path / "samples"
     samples.mkdir()
@@ -69,6 +84,8 @@ def test_list_bundled_samples_returns_only_safe_wavs(tmp_path: Path) -> None:
     assert list_bundled_samples(str(samples)) == ["nested/also-ok.wav", "ok.wav"]
 
 
+# Viewer safety: normal text is returned; a file containing a NUL byte is treated as binary and
+# refused; a file larger than max_bytes (11 > 10) is refused instead of loading into memory.
 def test_read_text_file_safely_blocks_binary_and_large_files(tmp_path: Path) -> None:
     text = tmp_path / "ok.py"
     binary = tmp_path / "bad.bin"
@@ -85,6 +102,8 @@ def test_read_text_file_safely_blocks_binary_and_large_files(tmp_path: Path) -> 
         read_text_file_safely(str(large), max_bytes=10)
 
 
+# The database may contain user work, so the file must be owner-only (0600) and its folder 0700.
+# (POSIX permission bits; on Windows these modes are not meaningful.)
 def test_init_db_uses_private_permissions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ID_APP_DATA_DIR", str(tmp_path / "data"))
 
@@ -95,6 +114,8 @@ def test_init_db_uses_private_permissions(tmp_path: Path, monkeypatch: pytest.Mo
     assert db_file.parent.stat().st_mode & 0o777 == 0o700
 
 
+# Belt-and-braces regression test: a script that would write a file if it were executed must be
+# rejected, with nothing played. Together with the parametrised test this shows scripts are never run as Python.
 def test_safe_script_never_executes_python_file_write() -> None:
     played: list[str] = []
     with pytest.raises(SecurityError):
