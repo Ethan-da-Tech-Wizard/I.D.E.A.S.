@@ -1,8 +1,13 @@
 # ==============================================================================
-# Program: test_pattern_migration.py
+# Program: tests/test_pattern_migration.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Automated unit and integration test suite validating subsystem invariants, error handling, edge cases, and component behavior.
+# Purpose: tests the migration of saved drum patterns from the old shape (schema v1: three
+# fx on/off booleans per track) to the richer per-track settings (schema v2). Covers the track-level
+# converters in app/services/audio/track_engine.py and the SQLite storage layer in
+# app/storage/database.py: ALTER TABLE upgrade, read-time migration and non-destructive reads.
+# Key rule: migration must preserve the OLD SOUND exactly and must never rewrite stored rows.
+# Run: python3 -m pytest tests/test_pattern_migration.py -q
 # ==============================================================================
 
 from __future__ import annotations
@@ -32,14 +37,19 @@ from app.storage.database import (
 )
 
 
+# autouse: every test gets its own empty data directory, so no test can touch the user's real database.
 @pytest.fixture(autouse=True)
+
 def isolated_app_data_dir(tmp_path, monkeypatch):
+    """Point ID_APP_DATA_DIR at tmp_path for the test's duration."""
     monkeypatch.setenv("ID_APP_DATA_DIR", str(tmp_path))
     yield
 
 
 # -- TrackState.from_legacy_dict / migrate_legacy_track_record -----------
 
+# All three legacy fx switched off must give a fully transparent track (no distortion, delay,
+# reverb, filter, LFO, modulation or compression; full gate; no loop; no choke group).
 def test_from_legacy_dict_defaults_are_all_bypassed_when_fx_off() -> None:
     state = TrackState.from_legacy_dict({"fx_state": [False, False, False]})
     assert state.distortion_drive == 0.0
@@ -54,6 +64,8 @@ def test_from_legacy_dict_defaults_are_all_bypassed_when_fx_off() -> None:
     assert state.choke_group is None
 
 
+# The old booleans controlled effects with fixed parameters. The new knobs must be set to exactly
+# those fixed values (the LEGACY_* constants) so old patterns sound identical after migration.
 def test_from_legacy_dict_maps_old_fx_booleans_to_legacy_fixed_params() -> None:
     """The whole point of migration is that the old sound doesn't change --
     the new continuous knobs must land on the exact old fixed values."""
@@ -68,6 +80,7 @@ def test_from_legacy_dict_maps_old_fx_booleans_to_legacy_fixed_params() -> None:
     assert state.reverb_mix == LEGACY_REVERB_MIX
 
 
+# Very old records may lack fx_state altogether; treat as everything off.
 def test_from_legacy_dict_handles_missing_fx_state() -> None:
     state = TrackState.from_legacy_dict({})
     assert state.distortion_drive == 0.0
@@ -75,6 +88,7 @@ def test_from_legacy_dict_handles_missing_fx_state() -> None:
     assert state.reverb_enabled is False
 
 
+# Per-effect independence: only the middle flag (delay) is on.
 def test_from_legacy_dict_partial_fx_combo() -> None:
     state = TrackState.from_legacy_dict({"fx_state": [False, True, False]})
     assert state.distortion_drive == 0.0
@@ -82,6 +96,8 @@ def test_from_legacy_dict_partial_fx_combo() -> None:
     assert state.reverb_enabled is False
 
 
+# Fields unrelated to effects (sample path, pitch, steps) must pass through untouched, new fields
+# get defaults (chance 100 percent), and the fx booleans become the new explicit fields.
 def test_migrate_legacy_track_record_preserves_sample_selection_fields() -> None:
     old = {
         "relative_path": "electronic/tr8-kick1.wav",
@@ -99,6 +115,7 @@ def test_migrate_legacy_track_record_preserves_sample_selection_fields() -> None
     assert record["delay_enabled"] is False
 
 
+# The migrated dict is a valid v2 record: TrackState.from_dict accepts it and yields the same settings.
 def test_migrate_legacy_track_record_round_trips_through_track_state_from_dict() -> None:
     """The migrated record must be a valid v2 record -- TrackState.from_dict
     should be able to consume it without error, since that's what the
@@ -113,6 +130,7 @@ def test_migrate_legacy_track_record_round_trips_through_track_state_from_dict()
 
 # -- database schema_version / ALTER TABLE migration ----------------------
 
+# A fresh database must have the schema_version column; PRAGMA table_info lists columns (name at index 1).
 def test_init_db_creates_schema_version_column() -> None:
     init_db()
     import sqlite3
@@ -124,6 +142,9 @@ def test_init_db_creates_schema_version_column() -> None:
     assert "schema_version" in columns
 
 
+# Upgrade path: build a database exactly as an old install would have it (no schema_version
+# column, one saved pattern), run init_db(), and verify the column was added and the old row kept
+# and treated as schema version 1.
 def test_init_db_alters_existing_table_missing_schema_version_column(tmp_path, monkeypatch) -> None:
     """Simulates upgrading from a pre-migration install: a patterns table
     that predates the schema_version column must get it added safely,
@@ -133,9 +154,11 @@ def test_init_db_alters_existing_table_missing_schema_version_column(tmp_path, m
     data_dir = tmp_path / "legacy_install"
     data_dir.mkdir()
     monkeypatch.setenv("ID_APP_DATA_DIR", str(data_dir))
+    # The filename id_app.db is where get_db_path() resolves inside ID_APP_DATA_DIR.
     db_path = os.path.join(str(data_dir), "id_app.db")
 
     conn = sqlite3.connect(db_path)
+    # Pre-migration table layout, reproduced by hand.
     conn.execute("""
         CREATE TABLE patterns (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +192,7 @@ def test_init_db_alters_existing_table_missing_schema_version_column(tmp_path, m
 
 # -- load_pattern vs. load_pattern_v2 --------------------------------------
 
+# Existing callers that do not pass a version keep writing (and reading) the old shape.
 def test_save_pattern_defaults_to_schema_version_1() -> None:
     init_db()
     save_pattern("Legacy Save", 120, [{"relative_path": "a.wav", "fx_state": [True, False, False],
@@ -177,6 +201,8 @@ def test_save_pattern_defaults_to_schema_version_1() -> None:
     assert plain["tracks"][0]["fx_state"] == [True, False, False]  # untouched, old shape
 
 
+# Compatibility promise: load_pattern() returns the stored data as-is (fx_state present, new keys
+# absent) because the current DAW UI still expects that shape.
 def test_load_pattern_v1_shape_is_never_migrated() -> None:
     """load_pattern() must keep returning the old shape forever -- the
     current daw.py UI depends on it and hasn't been rewired to v2 yet."""
@@ -188,6 +214,8 @@ def test_load_pattern_v1_shape_is_never_migrated() -> None:
     assert "delay_enabled" not in result["tracks"][0]
 
 
+# load_pattern_v2 converts v1 rows on the fly: schema_version is the current one and every track
+# carries the new fields derived from its old flags, with unrelated fields preserved.
 def test_load_pattern_v2_migrates_legacy_rows() -> None:
     init_db()
     save_pattern("Needs Migration", 120, [{"relative_path": "a.wav", "fx_state": [True, True, True],
@@ -202,6 +230,7 @@ def test_load_pattern_v2_migrates_legacy_rows() -> None:
     assert track["steps"] == [True, False, True]
 
 
+# Migration happens in memory only; reading must not change the database (users can still downgrade).
 def test_load_pattern_v2_does_not_mutate_stored_row() -> None:
     """Migration on read must not silently rewrite storage -- load_pattern()
     called again afterward should still see the original v1 shape."""
@@ -213,6 +242,7 @@ def test_load_pattern_v2_does_not_mutate_stored_row() -> None:
     assert still_old["tracks"][0]["fx_state"] == [True, False, False]
 
 
+# Rows saved with schema_version 2 must not be re-migrated; custom values (drive 3.3, gate 80) survive.
 def test_load_pattern_v2_already_v2_row_passes_through_unmigrated() -> None:
     init_db()
     v2_track = {"relative_path": "a.wav", "steps": [True], "pitch_semitones": 0, "chance": 100,
@@ -225,11 +255,14 @@ def test_load_pattern_v2_already_v2_row_passes_through_unmigrated() -> None:
     assert result["tracks"][0]["gate_length_pct"] == 80.0
 
 
+# Unknown names return None instead of raising.
 def test_load_pattern_v2_missing_pattern_returns_none() -> None:
     init_db()
     assert load_pattern_v2("does not exist") is None
 
 
+# The demo patterns seeded by init_db() are old-shape data; every one must migrate and end up with
+# the new fields, so a first-time user's demos work in the new engine.
 def test_demo_seed_patterns_migrate_cleanly() -> None:
     """The bundled demo patterns in database.py's init_db() are still
     schema_version 1 literal data -- confirm they survive migration."""
