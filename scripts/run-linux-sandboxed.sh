@@ -47,7 +47,7 @@ install -d -m 700 "$APP_DATA"
 #  --tmpfs /tmp      private scratch space that vanishes on exit.
 #  --bind APP_DATA   the single writable path, mapped to the same location so saved paths match.
 #  --ro-bind APP_BIN the executable itself is read-only inside the sandbox.
-#  --setenv          tells the app where its data folder is (app/security.py reads it).
+#  --setenv          tells the app where its data folder is (app/storage/database.py reads it).
 exec bwrap \
     --unshare-net \
     --die-with-parent \
