@@ -16,8 +16,8 @@
 # Design decisions: workspace state is exchanged as plain dicts via each widget's get_state()/load_state() so this window never needs
 # to know their internals; user scripts are never exec()ed, they go through security.run_safe_script which only allows sample playback and print.
 # Known limits / bugs noticed (comment pass only, not fixed here):
-#   - QTabBar is used in build_ide_mode() but is not imported at the top of this file, so building the IDE page raises NameError;
-#     it must be added to the PySide6.QtWidgets import list.
+#   - FIXED: QTabBar is used in build_ide_mode(); it was missing from the PySide6.QtWidgets import list, so building the IDE page
+#     raised NameError. It is imported now.
 #   - save_project() stores only the CURRENT editor tab, not every open file.
 #   - run_code() substitutes macro values into the source text with a regular expression, so a macro name that appears inside a string or
 #     comment is rewritten too, and a name containing regex metacharacters would misbehave (re.escape is not used).
@@ -31,7 +31,7 @@ from typing import Any
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSplitter, QTabWidget, QFileDialog, QMenuBar, QTextEdit,
-    QStackedWidget, QGraphicsDropShadowEffect, QFrame
+    QStackedWidget, QGraphicsDropShadowEffect, QFrame, QTabBar
 )
 from PySide6.QtCore import Qt, QUrl, QDir
 from PySide6.QtGui import QAction, QColor, QFont, QTextCursor

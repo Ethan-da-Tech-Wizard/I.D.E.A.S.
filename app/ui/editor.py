@@ -12,9 +12,9 @@
 # Used by: app/application.py (creates CodeEditor per file, connects cursor_position_changed and
 # diagnostics_updated, adds them to the EditorArea); highlighter.py (colours and squiggles);
 # autocomplete.py (popup).
-# Known bugs noticed (comments-only pass, not fixed here): (1) QTextCursor is used in
-# keyPressEvent and trigger_autocomplete but is never imported from PySide6.QtGui, so typing a
-# bracket/quote or any key that reaches trigger_autocomplete raises NameError inside the Qt event
+# Known bugs noticed (comments-only pass; (1) has since been fixed): (1) FIXED: QTextCursor is used in
+# keyPressEvent and trigger_autocomplete and used to be missing from the PySide6.QtGui import, so typing a
+# bracket/quote or any key that reached trigger_autocomplete raised NameError inside the Qt event
 # handler; (2) update_git_diff_cache runs a git command on every text change (no debounce); (3) in
 # paintEvent the second setPen call replaces the guide colour (#2a2a3e) with the default pen colour
 # and drawLine receives float coordinates; (4) the tab drag payload uses id() of a Python object,
@@ -25,7 +25,7 @@
 import os
 import re
 from PySide6.QtWidgets import QPlainTextEdit, QWidget, QTextEdit, QTabWidget, QTabBar, QSplitter, QApplication
-from PySide6.QtGui import QPainter, QColor, QFontMetrics, QPaintEvent, QTextCharFormat, QFont, QDrag
+from PySide6.QtGui import QPainter, QColor, QFontMetrics, QPaintEvent, QTextCharFormat, QFont, QDrag, QTextCursor
 from PySide6.QtCore import Qt, QRect, QSize, Signal, QMimeData, QTimer
 from app.ui.highlighter import PythonHighlighter
 
