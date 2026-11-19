@@ -4,6 +4,22 @@
 # Last Modified: November 18, 2026
 # Purpose: Manages audio track graphs, clip arrangements, automation lanes, volume/pan faders, and routing mixer busses in the digital audio workstation.
 # ==============================================================================
+# How this module fits: it holds one DAW track's sound settings (TrackState, plain dataclasses that convert to and from JSON for project files) and the
+# runtime object that turns those settings into audio (TrackProcessor). app/ui/daw.py builds a TrackState per track from the UI, wraps it in a
+# TrackProcessor with the loaded sample, and registers it with AudioEngine (engine.py), which calls process_block() once per audio block. Voices
+# (voice.py) play the sample; the effect chain in dsp.py shapes the summed voices.
+# Signal chain per block: voices summed -> distortion -> delay -> reverb -> compressor -> 3-band EQ -> pan -> fader.
+# Inputs: TrackState values (also edited live while playing), a stereo float32 sample array. Output: a (frames, 2) float32 view of the track's mix.
+# Design decisions: JSON keys equal the field names so saved files are self-describing (schema version 2; version 1 records are migrated by
+# migrate_legacy_track_record with values chosen so old projects sound the same); each processor preallocates its buffers so process_block does no
+# allocation except inside the compressor/EQ helpers; effects are skipped, not zeroed, when disabled.
+# Known limits noticed (comment pass only):
+#   - TrackState.from_dict trusts the types and ranges in the file (only unknown keys fall back to defaults), so a hand-edited file can inject
+#     strings or None; FilterType(...) / LFOShape(...) in _make_voice_params then raise ValueError at trigger time.
+#   - MAX_VOICES_PER_TRACK is a soft limit: the oldest voice is faded out, but the list may briefly hold more than 8 entries until it finishes.
+#   - process_block expects n_frames <= max_block_size (4096) or the scratch slices will be shorter than the block.
+#   - MIXER_FADER_MIN_DB is defined but unused here.
+# Tests: tests/test_audio_track_engine.py, tests/test_pattern_migration.py.
 
 """TrackState (the JSON-serializable parameter contract from
 docs/DAW_VISION_SPEC.md's "Data Model & Parameter Contract") and
@@ -30,6 +46,7 @@ from app.services.audio.dsp import (
 )
 from app.services.audio.voice import STEAL_FADE_MS, Voice, VoiceParams
 
+# At most 8 simultaneous notes per track (a drum hit rarely overlaps more than a few). The fader range is minus infinity (silence) to +6 dB.
 MAX_VOICES_PER_TRACK = 8
 MIXER_FADER_MIN_DB = float("-inf")
 MIXER_FADER_MAX_DB = 6.0
@@ -37,12 +54,14 @@ MIXER_FADER_MAX_DB = 6.0
 
 @dataclass
 class TrimState:
+    """Playback window of the sample as fractions (0-1) of its length: start_frac is where playback begins, end_frac where it ends."""
     start_frac: float = 0.0
     end_frac: float = 1.0
 
 
 @dataclass
 class LoopState:
+    """Looping: when enabled, playback repeats between start_frac and end_frac (fractions of the sample length, 0-1) while the note is held."""
     enabled: bool = False
     start_frac: float = 0.25
     end_frac: float = 0.75
@@ -50,6 +69,9 @@ class LoopState:
 
 @dataclass
 class EnvelopeState:
+    """Loudness-envelope settings (the loudness shape of a note): attack/decay/release in milliseconds, sustain as a percent (0-100).
+    The 5 ms default release avoids a click when a note ends.
+    """
     attack_ms: float = 0.0
     decay_ms: float = 0.0
     sustain_pct: float = 100.0
@@ -58,6 +80,7 @@ class EnvelopeState:
 
 @dataclass
 class FilterState:
+    """Per-voice filter: enabled flag, type ("lp", "hp" or "bp" as in dsp.FilterType), cutoff in Hz (default 20 kHz = wide open) and resonance Q (default 0.7)."""
     enabled: bool = False
     type: str = "lp"
     cutoff_hz: float = 20000.0
@@ -66,6 +89,7 @@ class FilterState:
 
 @dataclass
 class LFOState:
+    """Per-voice LFO: rate in Hz, depth in percent, shape ("sine", "tri", "square", "saw") and which parameter it modulates (target, default the filter cutoff)."""
     enabled: bool = False
     rate_hz: float = 2.0
     depth_pct: float = 0.0
@@ -75,6 +99,7 @@ class LFOState:
 
 @dataclass
 class ModEnvelopeState:
+    """Per-voice modulation envelope: its own ADSR times, which parameter it drives (target) and how strongly (amount_pct, percent of full range)."""
     enabled: bool = False
     attack_ms: float = 0.0
     decay_ms: float = 0.0
@@ -86,6 +111,7 @@ class ModEnvelopeState:
 
 @dataclass
 class CompressorState:
+    """Per-track compressor settings; values map one-to-one onto dsp.Compressor (threshold dBFS, ratio, attack/release ms, make-up dB)."""
     enabled: bool = False
     threshold_db: float = -18.0
     ratio: float = 4.0
@@ -96,6 +122,7 @@ class CompressorState:
 
 @dataclass
 class MixerState:
+    """Mixer-strip settings: fader in dB (0 = unity), pan from -1 (left) to +1 (right), and the three EQ band gains in dB (each limited to +/-15 by dsp.ThreeBandEQ)."""
     fader_db: float = 0.0
     pan: float = 0.0
     eq_low_db: float = 0.0
@@ -105,9 +132,13 @@ class MixerState:
 
 @dataclass
 class TrackState:
-    """Mirrors the JSON shape in docs/DAW_VISION_SPEC.md exactly -- field
-    names here are the field names in tracks_json, schema_version 2+."""
+    """All parameters of one track. Mirrors the JSON shape in docs/DAW_VISION_SPEC.md exactly -- field names here are the field names in tracks_json,
+    schema_version 2+.
 
+    Defaults are chosen to be "transparent" (no effect, no filtering) so a new track just plays its sample.
+    """
+
+    # Gate length as a percent of one step (100 = the note lasts until the next step); step_gate_overrides replaces it for individual step numbers.
     gate_length_pct: float = 100.0
     step_gate_overrides: dict[int, float] = field(default_factory=dict)
     trim: TrimState = field(default_factory=TrimState)
@@ -130,14 +161,21 @@ class TrackState:
     reverb_decay: float = 0.5
     reverb_mix: float = 0.3
 
+    # True when the sample is mono: the processor then uses an equal-power pan law; stereo samples use a simple balance control instead (see process_block).
     stereo_is_mono_source: bool = True  # drives pan-law vs. balance behavior
 
     def to_dict(self) -> dict:
+        """Convert to a JSON-ready dict (nested dicts for the sub-states; copies, so editing the result never changes the state).
+
+        Returns:
+            Dict whose keys equal the field names.
+        """
         return {
             "gate_length_pct": self.gate_length_pct,
             "step_gate_overrides": dict(self.step_gate_overrides),
             "trim": {"start_frac": self.trim.start_frac, "end_frac": self.trim.end_frac},
             "loop": {"enabled": self.loop.enabled, "start_frac": self.loop.start_frac, "end_frac": self.loop.end_frac},
+            # vars() gives a dict of the dataclass fields; copy() avoids sharing it with the live object.
             "amp_envelope": vars(self.amp_envelope).copy(),
             "filter": vars(self.filter).copy(),
             "lfo": vars(self.lfo).copy(),
@@ -158,8 +196,17 @@ class TrackState:
 
     @classmethod
     def from_dict(cls, data: dict) -> "TrackState":
+        """Build a TrackState from a saved dict, using defaults for any missing key.
+
+        Args:
+            data: dict as produced by to_dict (may come from an older or hand-edited file).
+
+        Returns:
+            A new TrackState. Types and ranges in `data` are not validated here.
+        """
         state = cls()
         state.gate_length_pct = data.get("gate_length_pct", 100.0)
+        # JSON object keys are always strings, so the step numbers are converted back to int.
         state.step_gate_overrides = {int(k): v for k, v in data.get("step_gate_overrides", {}).items()}
         trim = data.get("trim", {})
         state.trim = TrimState(trim.get("start_frac", 0.0), trim.get("end_frac", 1.0))
@@ -203,20 +250,18 @@ class TrackState:
 
     @classmethod
     def from_legacy_dict(cls, old_track: dict) -> "TrackState":
-        """Migrates a schema_version 1 track record (the shape DawTrack.
-        to_dict() / app.storage.database's demo seed patterns still use --
-        `fx_state: [distortion, delay, reverb]` booleans, no gate/loop/
-        envelope/filter/LFO/compressor/mixer fields at all) into a v2
-        TrackState.
+        """Convert a schema version 1 track record into a TrackState.
 
-        Per docs/DAW_VISION_SPEC.md's "Saved Pattern Migration" section, the
-        defaults here are chosen to be audibly transparent, not arbitrary:
-        the old boolean FX map onto the *exact* fixed parameter values
-        `audio_fx.py`'s render functions used to use (LEGACY_DISTORTION_DRIVE
-        etc. below), so a migrated pattern sounds the same as it did under
-        the old offline-render engine, not just "roughly similar."
+        Args:
+            old_track: version 1 dict (as produced by DawTrack.to_dict and the demo seed patterns), whose only DSP data is
+                `fx_state: [distortion, delay, reverb]` booleans; there are no gate, loop, envelope, filter, LFO, compressor or mixer fields.
+
+        Returns:
+            A TrackState with the three effects mapped onto the fixed parameter values the old offline engine (audio_fx.py) used
+            (LEGACY_* constants below), so a migrated pattern sounds the same as before, not merely similar.
         """
         state = cls()
+        # A missing or empty fx_state means all effects off.
         fx_state = old_track.get("fx_state", [False, False, False])
         distortion, delay, reverb = (bool(v) for v in fx_state) if fx_state else (False, False, False)
 
@@ -250,14 +295,15 @@ LEGACY_REVERB_MIX = 0.3
 
 
 def migrate_legacy_track_record(old_track: dict) -> dict:
-    """Migrates one full schema_version 1 track record -- sample selection
-    fields (relative_path/steps/pitch_semitones/chance) plus the FX state --
-    into a schema_version 2 record: the same selection fields, flattened
-    together with TrackState.from_legacy_dict(...).to_dict().
+    """Migrate one full version 1 track record into a version 2 record.
 
-    This is what actually gets stored in a pattern's `tracks` list; splitting
-    the DSP-only migration into TrackState.from_legacy_dict keeps that piece
-    testable on its own (it has no opinion on sample selection).
+    Args:
+        old_track: version 1 dict with relative_path, steps, pitch_semitones, chance and fx_state.
+
+    Returns:
+        A dict with the sample-selection fields (relative_path, steps list, pitch_semitones default 0, chance default 100 percent) merged
+        with TrackState.from_legacy_dict(...).to_dict(). This is what gets stored in a pattern's `tracks` list; keeping the DSP-only migration in
+        TrackState.from_legacy_dict makes that piece testable alone (it has no opinion on sample selection).
     """
     state = TrackState.from_legacy_dict(old_track)
     record = {
@@ -271,32 +317,60 @@ def migrate_legacy_track_record(old_track: dict) -> dict:
 
 
 def _equal_power_pan(pan: float) -> tuple[float, float]:
-    """pan in [-1, 1] -> (left_gain, right_gain), constant total power."""
+    """Equal-power pan law.
+
+    Args:
+        pan: -1 (full left) to +1 (full right); values outside are clamped.
+
+    Returns:
+        (left_gain, right_gain) with left^2 + right^2 = 1, so perceived loudness stays constant as a sound is panned. At the centre each side is
+        cos(45 degrees) = 0.707 (-3 dB).
+    """
     pan = min(max(pan, -1.0), 1.0)
+    # Map pan -1..+1 onto an angle of 0..90 degrees (pi/2 radians): cos falls from 1 to 0 while sin rises from 0 to 1.
     angle = (pan + 1.0) * (np.pi / 4.0)
     return float(np.cos(angle)), float(np.sin(angle))
 
 
 class TrackProcessor:
+    """Runtime player for one track: owns up to 8 voices plus the delay, reverb, compressor and EQ instances (each with its own memory).
+
+    The engine calls process_block once per audio block on the audio thread; the UI changes self.state, muted and soloed from the GUI thread
+    (settings are read again on every block, so changes apply live without locking).
+    """
     def __init__(self, track_id: str, state: TrackState, sample_data: np.ndarray,
                  base_semitones: float = 0.0, sample_rate: int = SAMPLE_RATE,
                  max_block_size: int = 4096) -> None:
+        """Prepare a track.
+
+        Args:
+            track_id: unique id used by the engine and choke registry.
+            state: the settings object (kept by reference, so later edits are heard immediately).
+            sample_data: stereo float32 array (frames, 2) at the engine sample rate, e.g. from dsp.load_and_prepare_sample.
+            base_semitones: fixed pitch offset for every note of this track.
+            sample_rate: Hz.
+            max_block_size: largest block process_block will be asked for (preallocated buffers are this long).
+        """
         self.track_id = track_id
         self.state = state
         self.sample_data = sample_data
         self.base_semitones = base_semitones
+        # muted / soloed are read by the engine each block to decide whether to call process_block at all.
         self.muted = False
         self.soloed = False
 
         self._sample_rate = sample_rate
         self._max_block_size = max_block_size
+        # Currently sounding or releasing notes, oldest first.
         self._voices: list[Voice] = []
+        # Sum of all voices for this block (the track's pre-effects bus), reused every call.
         self._bus_scratch = np.zeros((max_block_size, 2), dtype=np.float32)
         # Reused for every voice's render() in sequence within one block --
         # voices render one at a time, so a single shared scratch buffer is
         # enough (no need for a per-voice buffer pool).
         self._voice_scratch = np.zeros((max_block_size, 2), dtype=np.float32)
 
+        # Effects are created once with their own memory so delay/reverb tails and compressor state continue across blocks.
         self._delay = DelayLine(sample_rate)
         self._reverb = ReverbComb(sample_rate, max_block_size=max_block_size)
         self._compressor = Compressor(sample_rate)
@@ -306,11 +380,23 @@ class TrackProcessor:
         self.peak_level: float = 0.0
         self.gain_reduction_db: float = 0.0
 
+        # Note: the id is copied once at construction, so later changes to state.choke_group do not move the track to another group.
         # Filled in by ChokeGroupRegistry.register(); used to skip
         # notifying yourself and to look up choke_group membership quickly.
         self.choke_group: int | None = state.choke_group
 
     def _make_voice_params(self, gate_length_frac_override: float | None = None) -> VoiceParams:
+        """Translate the track's state into a flat VoiceParams for a new voice.
+
+        Args:
+            gate_length_frac_override: unused (reserved).
+
+        Returns:
+            VoiceParams snapshot; voices keep this snapshot, so changing the track later affects only notes started afterwards.
+
+        Raises:
+            ValueError: the state holds an unknown filter type or LFO shape string.
+        """
         s = self.state
         return VoiceParams(
             base_semitones=self.base_semitones,
@@ -342,11 +428,12 @@ class TrackProcessor:
         )
 
     def trigger_note(self) -> Voice:
-        """Starts a new voice. Callers (the engine's step scheduler or MIDI
-        routing) hold the returned Voice and call .note_off() on it directly
-        when the gate/held-key ends -- see docs/DAW_VISION_SPEC.md's
-        Playback Model section for why release targets a specific voice
-        rather than "the track"."""
+        """Start a new voice and return it.
+
+        Callers (the engine's step scheduler or MIDI routing) hold the returned Voice and call .note_off() on it directly when the gate/held-key ends --
+        see docs/DAW_VISION_SPEC.md's Playback Model section for why release targets a specific voice rather than "the track".
+        """
+        # At the voice limit: fade out the oldest still-sounding voice (a short fade, to avoid a click) to make room for the new one.
         if len(self._voices) >= MAX_VOICES_PER_TRACK:
             oldest = next((v for v in self._voices if not v.is_finished), None)
             if oldest is not None:
@@ -357,33 +444,49 @@ class TrackProcessor:
         return voice
 
     def choke_all_voices(self) -> None:
+        """Fade out every sounding voice with the short steal fade (used by choke groups and when the transport stops)."""
         for voice in self._voices:
             if not voice.is_finished:
                 voice.steal()
 
     @property
     def voice_count(self) -> int:
+        """Number of voices in the list, including ones still fading out."""
         return len(self._voices)
 
     def process_block(self, n_frames: int, force_bypass_compressor: bool = False,
                        force_bypass_reverb: bool = False) -> np.ndarray:
-        """Returns this track's contribution for the block: bus_scratch[:n_frames],
-        a preallocated view (caller must consume before the next call)."""
+        """Render this track for one block.
+
+        Args:
+            n_frames: block length (must not exceed max_block_size).
+            force_bypass_compressor: engine overload shedding: skip the compressor even if enabled.
+            force_bypass_reverb: engine overload shedding: skip the reverb even if enabled.
+
+        Returns:
+            View of the preallocated bus buffer, (n_frames, 2) float32. The caller must use it before the next call because it is overwritten.
+        """
+        # Start from silence; voices are added into this buffer.
         bus = self._bus_scratch[:n_frames]
         bus[:] = 0.0
 
+        # Skip the loop when nothing is playing, but note that effect tails (delay, reverb) then rely on the bus being processed below even with silence in it.
         if self._voices:
             voice_out = self._voice_scratch[:n_frames]
             for voice in self._voices:
                 voice.render(n_frames, voice_out)
                 bus += voice_out
+            # Drop finished voices so the list does not grow forever; this allocates a small list, a known exception to the no-allocation rule.
             self._voices = [v for v in self._voices if not v.is_finished]
 
+        # A muted track outputs silence and resets its meters (the engine normally does not even call us, this is the safe fallback).
         if not self.muted:
             s = self.state
+            # Effect order follows the signal-chain list in the file header; each is skipped when off so unused effects cost no CPU.
             if s.distortion_drive > 0.0:
                 apply_distortion(bus, s.distortion_drive)
             if s.delay_enabled:
+                # Copy the live parameters into the effect on every block with the same clamps the effect applies itself, so UI changes are heard immediately.
                 self._delay.delay_ms = s.delay_ms
                 self._delay.feedback = min(max(s.delay_feedback, 0.0), 0.95)
                 self._delay.mix = min(max(s.delay_mix, 0.0), 1.0)
@@ -392,6 +495,7 @@ class TrackProcessor:
                 self._reverb.decay = min(max(s.reverb_decay, 0.0), 0.98)
                 self._reverb.mix = min(max(s.reverb_mix, 0.0), 1.0)
                 self._reverb.process(bus)
+            # Compressor is also bypassed by the engine's overload shedding.
             if s.compressor.enabled and not force_bypass_compressor:
                 self._compressor.threshold_db = s.compressor.threshold_db
                 self._compressor.ratio = max(s.compressor.ratio, 1.0)
@@ -399,16 +503,20 @@ class TrackProcessor:
                 self._compressor.release_ms = s.compressor.release_ms
                 self._compressor.makeup_db = s.compressor.makeup_db
                 self.gain_reduction_db = self._compressor.process(bus)
+            # Report no gain reduction when the compressor is off, so the meter falls back to zero.
             else:
                 self.gain_reduction_db = 0.0
 
+            # EQ is last before pan/fader so tone shaping applies to the processed sound; each band is skipped inside the EQ when it is at 0 dB.
             self._eq.process(bus, s.mixer.eq_low_db, s.mixer.eq_mid_db, s.mixer.eq_high_db)
 
+            # Mono sources: fold both channels to one and place it with the equal-power law, so the pan control moves the sound between the speakers.
             if s.stereo_is_mono_source:
                 left_gain, right_gain = _equal_power_pan(s.mixer.pan)
                 mono = (bus[:, 0] + bus[:, 1]) * 0.5
                 bus[:, 0] = mono * left_gain
                 bus[:, 1] = mono * right_gain
+            # Stereo sources: balance control that only turns down the far channel, so the stereo image is preserved at the centre.
             else:
                 pan = min(max(s.mixer.pan, -1.0), 1.0)
                 if pan < 0.0:
@@ -416,9 +524,11 @@ class TrackProcessor:
                 elif pan > 0.0:
                     bus[:, 0] *= (1.0 - pan)
 
+            # Fader limited to +6 dB; the dB value is converted to a linear multiplier. Minus infinity dB gives exactly 0 (silence).
             fader_db = min(s.mixer.fader_db, MIXER_FADER_MAX_DB)
             bus *= db_to_linear(fader_db)
 
+            # Peak after all processing, for the meter; computed only for non-empty blocks.
             self.peak_level = float(np.max(np.abs(bus))) if n_frames else 0.0
         else:
             bus[:] = 0.0
