@@ -1,8 +1,29 @@
 # ==============================================================================
-# Program: daw.py
+# Program: app/ui/daw.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Main graphical digital audio workstation canvas displaying multi-track timeline arrangements, beat grids, clip blocks, playheads, and transport controls.
+# Purpose: the DAW mode: a step-sequencer drum machine. DawWorkspace is the whole screen
+# (transport bar, tracks, save/load/export, MIDI hookup); each DawTrack is one row with mute/solo,
+# sample pickers, an FX rack and a grid of 16..128 step buttons. Sound comes from the real-time
+# engine in app/services/audio/ (AudioEngine + one TrackProcessor per track); this file is the UI
+# and the glue.
+# Threads (important): Qt widgets may only be touched on the GUI thread, while AudioEngine calls
+# _on_engine_step_boundary on the AUDIO thread. That callback therefore reads only plain Python
+# attributes (track.steps, track.chance_pct) and triggers notes; it hands the visual playhead
+# update to the GUI thread through AudioEngineUiBridge, a queued Qt signal.
+# Used by: app/application.py (build_daw_mode, get_state/load_state for projects, MIDI attach,
+# asset drops); tests do not cover this module directly (needs PySide6 plus audio libraries).
+# Data: samples are bundled WAVs under app/resources/samples, grouped by folder into "categories";
+# custom imports appear under the "My Samples" category when a workspace is open. Patterns are
+# saved two ways: the SQLite pattern table (DawTrack.to_dict, legacy fx booleans) and project
+# files (DawWorkspace.get_state, newer per-track dict).
+# Known limits / bugs noticed: DawWorkspace.get_state does not save the per-track pitch control
+# while DawTrack.to_dict does (pitch is lost when saving a project file); get_state reads the
+# category/sample combo boxes, which hold the search results while a search is active, so a track
+# chosen through search can be saved as the wrong sample; clear_workspace does not reset the
+# tuning toggles or the length selector; export_audio ignores the chance knob and the
+# mute/solo state; the default startup pattern 'House Beat' is looked up in the database and
+# silently replaced by four empty tracks if anything fails.
 # ==============================================================================
 
 import math
@@ -32,6 +53,7 @@ from app.services.audio.track_engine import (
 from app.widgets.fx_rack import FXRack, THEME_PRESETS
 from app.storage.database import StorageError, list_patterns, load_pattern, save_pattern
 
+# Cache for the one-frame silent sample (numpy is imported lazily on first use).
 _EMPTY_STEREO_SAMPLE = None  # populated lazily by _silent_sample() -- see below
 
 
@@ -44,9 +66,11 @@ def _silent_sample():
     global _EMPTY_STEREO_SAMPLE
     if _EMPTY_STEREO_SAMPLE is None:
         import numpy as np
+        # Shape (frames, channels) = (1, 2): one silent stereo frame, float32 like all engine audio. The same array is shared by every track, which is safe because it is never written to.
         _EMPTY_STEREO_SAMPLE = np.zeros((1, 2), dtype=np.float32)
     return _EMPTY_STEREO_SAMPLE
 
+# Category name under which user-imported samples (workspace audio/custom/) are listed. Paths beginning with this prefix are resolved against the workspace instead of the bundled library.
 CUSTOM_SAMPLE_CATEGORY = "My Samples"
 
 class NoScrollComboBox(QComboBox):
@@ -54,14 +78,28 @@ class NoScrollComboBox(QComboBox):
     value changes while scrolling the DAW panel.
     """
     def wheelEvent(self, event):
+        """Ignore the wheel so the event reaches the scroll area (scrolling the track list must not change samples by accident)."""
         event.ignore()
 
 class DawTrack(QWidget):
+    """One sequencer row: sample picker, mute/solo/delete, FX rack and step buttons.
+
+    Signals:
+        delete_requested(object): emitted with this widget when the user clicks the trash button; the workspace removes it.
+    """
     delete_requested = Signal(object)
 
     def __init__(self, samples_dict, samples_base_dir, samples_flat=None):
+        """Create the row.
+
+        Args:
+            samples_dict: {category: [file names]} for the category/sample drop-downs.
+            samples_base_dir: folder of the bundled samples (used to resolve a pick to a file).
+            samples_flat: list of every "category/name" path, used by the search box.
+        """
         super().__init__()
         self.setObjectName("DawTrack")
+        # Pattern data: one bool per step. Always allocated for the maximum length (128); rebuild_step_buttons trims or extends it to the chosen length.
         self.steps = [False] * 128
         self.samples_dict = samples_dict
         self.samples_base_dir = samples_base_dir
@@ -70,6 +108,7 @@ class DawTrack(QWidget):
         self.fx_state = (False, False, False)
         self.octave_semitones = 0
         self.tuning_offset_semitones = 0.0
+        # True while the search box has text; the sample list then holds full relative paths and the category box is disabled.
         self.search_active = False
         self.workspace_path = None  # Set by DawWorkspace.set_workspace_path() when a project is open.
 
@@ -88,16 +127,19 @@ class DawTrack(QWidget):
         # track_processor.muted/.soloed directly since those already exist.
         self.chance_pct: int = 100
 
+        # Index of the step currently highlighted, so the previous highlight can be cleared (-1 = none).
         self._last_playhead = -1
 
         self.setup_ui()
         
     def setup_ui(self):
+        """Build the three rows: controls, FX rack, and the scrollable step grid."""
         # Main vertical layout: controls on top, step grid below
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(8)
         
+        # Mute / solo / delete buttons, search box, category and sample drop-downs and the randomise button.
         # ── Row 1: Sample selection (search + category + sample) ──
         sample_row = QHBoxLayout()
         sample_row.setSpacing(6)
@@ -120,6 +162,7 @@ class DawTrack(QWidget):
             }
         """)
         self.btn_mute.setToolTip("Mute Track")
+        # Mute and solo write straight to the TrackProcessor flags (read by the audio thread), see _on_mute_toggled.
         self.btn_mute.toggled.connect(self._on_mute_toggled)
 
         self.btn_solo = QPushButton("S")
@@ -160,6 +203,7 @@ class DawTrack(QWidget):
         self.btn_delete.setToolTip("Delete Track")
         self.btn_delete.clicked.connect(lambda: self.delete_requested.emit(self))
 
+        # Typing filters all samples by substring (see on_search_changed).
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("🔍 Search sounds…")
         self.search_box.setMinimumWidth(120)
@@ -177,6 +221,7 @@ class DawTrack(QWidget):
         self.sample_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.sample_combo.currentTextChanged.connect(self.on_sample_changed)
 
+        # Fills the grid randomly, about one step in four.
         self.btn_randomize = QPushButton("🎲")
         self.btn_randomize.setToolTip("Randomly populate steps with active triggers")
         self.btn_randomize.setFixedWidth(36)
@@ -199,6 +244,7 @@ class DawTrack(QWidget):
         self.fx_rack.chance_spin.valueChanged.connect(self._on_chance_changed)
         layout.addWidget(self.fx_rack)
 
+        # Select the first category so a new track already has a sample (this triggers on_category_changed -> on_sample_changed -> refresh_audio_source).
         # Initialize comboboxes
         if self.samples_dict:
             first_cat = sorted(self.samples_dict.keys())[0]
@@ -208,6 +254,7 @@ class DawTrack(QWidget):
         # ── Row 3: Step Grid — Scrollable & Responsive ──
         self.grid_scroll = QScrollArea()
         self.grid_scroll.setWidgetResizable(True)
+        # Fixed height (one row of buttons plus the scrollbar) so only the width scrolls for long patterns.
         self.grid_scroll.setFixedHeight(62)
         self.grid_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.grid_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -222,9 +269,16 @@ class DawTrack(QWidget):
         self.grid_scroll.setWidget(self.grid_container)
         layout.addWidget(self.grid_scroll)
 
+        # Initial grid; the workspace calls it again with the chosen length.
         self.rebuild_step_buttons(128)
 
     def rebuild_step_buttons(self, num_steps: int):
+        """Recreate the step buttons for `num_steps` steps, keeping existing step values.
+
+        Args:
+            num_steps: 16, 32, 64 or 128 (any positive count works).
+        """
+        # Delete old widgets (deleteLater) so Qt frees them after pending events.
         # Clear existing buttons and separators from grid_layout
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
@@ -234,6 +288,7 @@ class DawTrack(QWidget):
 
         self.step_buttons = []
         
+        # Copy the overlapping part of the old pattern into the new list: shrinking truncates, growing pads with False.
         # Resize self.steps preserving old values
         old_steps = self.steps
         self.steps = [False] * num_steps
@@ -246,12 +301,15 @@ class DawTrack(QWidget):
             btn.setMaximumWidth(40)
             btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             btn.setObjectName("stepBtn")
+            # The "active" and "playing" dynamic properties are matched by the stylesheet (stepBtn[active="true"] etc.); force_style_update makes Qt re-evaluate them.
             btn.setProperty("active", "true" if self.steps[i] else "false")
             btn.setProperty("playing", "false")
+            # Default argument idx=i binds this button's index; a plain closure would use the last i.
             btn.clicked.connect(lambda checked, idx=i: self.toggle_step(idx))
             self.step_buttons.append(btn)
             self.grid_layout.addWidget(btn)
             
+            # A thin divider after every 4 steps marks the beat (16th-note grid: 4 steps = 1 beat).
             # Add beat separator every 4 steps
             if (i + 1) % 4 == 0 and i != num_steps - 1:
                 sep = QFrame()
@@ -261,6 +319,7 @@ class DawTrack(QWidget):
                 self.grid_layout.addWidget(sep)
 
     def randomize_steps(self):
+        """Turn each step on with 25 percent probability (a quick way to get a pattern) and refresh the buttons."""
         import random
         for i in range(len(self.steps)):
             self.steps[i] = random.random() < 0.25
@@ -269,6 +328,8 @@ class DawTrack(QWidget):
             self.force_style_update(btn)
 
     def on_category_changed(self, category):
+        """Refill the sample drop-down with the files of `category` and select the first one."""
+        # Block signals while refilling so the half-built list does not trigger on_sample_changed for each entry.
         self.sample_combo.blockSignals(True)
         self.sample_combo.clear()
         if category in self.samples_dict:
@@ -279,7 +340,9 @@ class DawTrack(QWidget):
             self.on_sample_changed(self.sample_combo.currentText())
 
     def on_sample_changed(self, sample_name):
+        """Remember the chosen sample's relative path ("category/name") and load its audio."""
         if not sample_name: return
+        # In search mode the combo already holds full relative paths.
         if self.search_active:
             self.current_relative_path = sample_name
         else:
@@ -288,12 +351,14 @@ class DawTrack(QWidget):
         self.refresh_audio_source()
 
     def on_search_changed(self, text):
+        """Filter the sample list by the search text; clearing the text returns to category mode."""
         text = text.strip().lower()
         self.search_active = bool(text)
         self.category_combo.setEnabled(not self.search_active)
         if not self.search_active:
             self.on_category_changed(self.category_combo.currentText())
             return
+        # Case-insensitive substring search over every bundled sample path.
         matches = sorted(p for p in self.samples_flat if text in p.lower())
         self.sample_combo.blockSignals(True)
         self.sample_combo.clear()
@@ -304,21 +369,30 @@ class DawTrack(QWidget):
             self.on_sample_changed(self.sample_combo.currentText())
 
     def _on_mute_toggled(self, checked: bool) -> None:
+        """Mirror the mute button onto the TrackProcessor (read on the audio thread)."""
         if self.track_processor is not None:
             self.track_processor.muted = checked
 
     def _on_solo_toggled(self, checked: bool) -> None:
+        """Mirror the solo button onto the TrackProcessor."""
         if self.track_processor is not None:
             self.track_processor.soloed = checked
 
     def _on_chance_changed(self, value: int) -> None:
+        """Store the chance (0-100 percent) in a plain attribute: the audio thread must not read the Qt spin box."""
         self.chance_pct = value
 
     def on_fx_changed(self, distortion, delay, reverb):
+        """Remember the three FX toggles and push them to the engine.
+
+        Args:
+            distortion, delay, reverb: new on/off states from the FX rack.
+        """
         self.fx_state = (distortion, delay, reverb)
         self._apply_fx_and_pitch_state()
 
     def on_pitch_changed(self, semitones):
+        """Store the track's pitch shift in semitones and push it to the engine."""
         self.octave_semitones = semitones
         self._apply_fx_and_pitch_state()
 
@@ -354,6 +428,7 @@ class DawTrack(QWidget):
         state.reverb_enabled = reverb
         state.reverb_decay = LEGACY_REVERB_DECAY
         state.reverb_mix = LEGACY_REVERB_MIX
+        # Total pitch = the track's own shift + the global reference-tuning offset (semitones are logarithmic, so the two simply add).
         self.track_processor.base_semitones = self.octave_semitones + self.tuning_offset_semitones
 
     def _ensure_track_processor(self) -> None:
@@ -379,6 +454,7 @@ class DawTrack(QWidget):
         if not self.current_relative_path or self.track_processor is None:
             return
 
+        # Two resolution paths: custom samples (workspace) vs bundled samples. Both go through validators in app/security.py or sample_import.py that raise SecurityError for bad paths; a failure simply keeps the previous sample.
         custom_prefix = f"{CUSTOM_SAMPLE_CATEGORY}/"
         if self.current_relative_path.startswith(custom_prefix):
             # Custom samples resolve against the open project workspace, not the
@@ -407,10 +483,16 @@ class DawTrack(QWidget):
             # boundary. Fail silently (keep the previous sample playing)
             # rather than crash the whole DAW on one bad file.
             return
+        # Swap in the new audio; the audio thread picks it up on the next trigger.
         self.track_processor.sample_data = sample_data
         self._apply_fx_and_pitch_state()
 
     def toggle_step(self, index):
+        """Flip one step on/off and update its button.
+
+        Args:
+            index: step number (0-based).
+        """
         self.steps[index] = not self.steps[index]
         btn = self.step_buttons[index]
         btn.setProperty("active", "true" if self.steps[index] else "false")
@@ -426,6 +508,7 @@ class DawTrack(QWidget):
         prev = self._last_playhead
         self._last_playhead = step_index
 
+        # Un-highlight the previous step, highlight the new one and scroll it into view.
         if 0 <= prev < num_buttons:
             self.step_buttons[prev].setProperty("playing", "false")
             self.force_style_update(self.step_buttons[prev])
@@ -437,6 +520,7 @@ class DawTrack(QWidget):
             self.grid_scroll.ensureWidgetVisible(btn)
 
     def force_style_update(self, widget):
+        """Re-apply the stylesheet to one widget; needed after changing a dynamic property, because Qt does not re-style automatically."""
         widget.style().unpolish(widget)
         widget.style().polish(widget)
 
@@ -450,6 +534,7 @@ class DawTrack(QWidget):
         return self.audio_engine.note_on(self.track_id)
 
     def to_dict(self) -> dict:
+        """Serialise this track in the legacy pattern format used by the database (relative_path, fx_state booleans, pitch_semitones, steps)."""
         return {
             "relative_path": self.current_relative_path,
             "fx_state": list(self.fx_state),
@@ -458,10 +543,17 @@ class DawTrack(QWidget):
         }
 
     def restore_state(self, state: dict) -> None:
+        """Apply a dict produced by to_dict (or the legacy/migrated equivalent).
+
+        Args:
+            state: keys relative_path, fx_state, steps (pitch_semitones is not restored here).
+        """
         relative_path = state.get("relative_path")
         if relative_path:
+            # Split "category/name"; rpartition handles names without a folder (category is then "").
             category, _, filename = relative_path.rpartition("/")
             if category in self.samples_dict:
+                # Reset search mode quietly (no signal storm) before selecting the saved category and sample.
                 self.search_box.blockSignals(True)
                 self.search_box.clear()
                 self.search_box.blockSignals(False)
@@ -485,6 +577,7 @@ class DawTrack(QWidget):
         self.fx_rack.btn_reverb.setChecked(self.fx_state[2])
 
         steps = state.get("steps", [])
+        # The saved pattern may be longer or shorter than the current grid.
         # Pad or truncate steps to match the current step length
         self.steps = [bool(s) for s in steps] + [False] * max(0, len(self.step_buttons) - len(steps))
         self.steps = self.steps[:len(self.step_buttons)]
@@ -493,6 +586,7 @@ class DawTrack(QWidget):
             btn.setProperty("active", "true" if active else "false")
             self.force_style_update(btn)
 
+        # Load the audio for the restored sample.
         self.refresh_audio_source()
 
 class AudioEngineUiBridge(QObject):
@@ -507,35 +601,50 @@ class AudioEngineUiBridge(QObject):
     what makes emit() here safe to call from AudioEngine's callback thread.
     """
 
+    # Qt automatically queues signal deliveries across threads when the receiver lives in the GUI thread, so emitting from the audio thread is safe.
     step_advanced = Signal(int)
 
     def emit_step_advanced(self, step_index: int) -> None:
+        """Emit step_advanced; call from any thread."""
         self.step_advanced.emit(step_index)
 
 
+# Concert pitch reference: A4 = 440 Hz. Alternative tunings are expressed relative to it.
 STANDARD_TUNING_HZ = 440.0
 
 
 class DawWorkspace(QWidget):
+    """The DAW screen: transport controls, track list, pattern save/load, WAV export and MIDI hookup.
+
+    Signals:
+        theme_changed(str): accent colour (hex) chosen in the theme drop-down; the main window restyles the app.
+        asset_dropped(str): relative path of an asset dropped from the asset manager.
+    """
     theme_changed = Signal(str)
     asset_dropped = Signal(str)
 
     def __init__(self):
+        """Create the audio engine and an initial set of tracks."""
         super().__init__()
         self.is_playing = False
         self.bpm = 120
         self.tuning_hz = STANDARD_TUNING_HZ
         self.tuning_offset_semitones = 0.0
+        # Current pattern length in steps; changed by the length drop-down.
         self.num_steps = 128
         self.setAcceptDrops(True)
 
         # Real-time audio engine (docs/DAW_VISION_SPEC.md) -- replaces the
         # old busy-wait AudioEngineThread + paplay-subprocess SamplePlayer.
+        # 1024 frames per audio block: about 23 ms at 44.1 kHz, a compromise between latency and CPU safety.
         self.audio_engine = AudioEngine(block_size=1024)
+        # The audio thread emits step events through this QObject; the slot runs on the GUI thread.
         self._ui_bridge = AudioEngineUiBridge()
         self._ui_bridge.step_advanced.connect(self._on_step_advanced, Qt.ConnectionType.QueuedConnection)
+        # Hook called by the engine on every step (on the audio thread).
         self.audio_engine.on_step_boundary = self._on_engine_step_boundary
 
+        # app/resources/samples, resolved relative to this file.
         self.samples_base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources", "samples")
         self.samples_flat = self.get_available_samples_flat()
         self.samples_dict = self.group_samples(self.samples_flat)
@@ -547,6 +656,7 @@ class DawWorkspace(QWidget):
         # note number -> Voice, for MIDI note-off release. Written/read only
         # from the audio callback thread (see _handle_midi_note_on/_off)
         # since that's where MidiService's callbacks fire from.
+        # note number -> sounding Voice, so a MIDI note-off can release exactly that voice.
         self._active_midi_voices: dict[int, object] = {}
 
         self.setup_ui()
@@ -569,11 +679,17 @@ class DawWorkspace(QWidget):
         midi_service.on_note_off(self._handle_midi_note_off)
 
     def assign_midi_track(self, label: str, track_index: int) -> None:
+        """Route the MIDI label (for example "kick") to a track by index.
+
+        Raises:
+            SecurityError: no MIDI service attached, or the index is out of range.
+        """
         if self.midi_router is None:
             raise SecurityError("Attach a MIDI service before assigning track mappings.")
         self.midi_router.assign(label, track_index, len(self.tracks))
 
     def _handle_midi_note_on(self, note: int, velocity: int) -> None:
+        """Start the track mapped to this MIDI note as a held voice and remember it for the note-off. Runs on the MIDI callback thread."""
         if self.midi_router is None:
             return
         track_index = self.midi_router.resolve(note, velocity)
@@ -583,6 +699,7 @@ class DawWorkspace(QWidget):
                 self._active_midi_voices[note] = voice
 
     def _handle_midi_note_off(self, note: int) -> None:
+        """Release the voice started by the matching note-on, if any."""
         voice = self._active_midi_voices.pop(note, None)
         if voice is not None:
             self.audio_engine.note_off_voice(voice)
@@ -618,6 +735,7 @@ class DawWorkspace(QWidget):
         self._refresh_custom_samples()
 
     def _refresh_custom_samples(self) -> None:
+        """Rebuild the "My Samples" category from the workspace's imported files and add/remove it in every track's category drop-down."""
         from app.services.audio.sample_import import list_custom_samples
 
         filenames: list[str] = []
@@ -626,6 +744,7 @@ class DawWorkspace(QWidget):
                 custom_paths = list_custom_samples(self.workspace_path)
             except SecurityError:
                 custom_paths = []
+            # list_custom_samples returns "custom/name.wav"; the UI category stores only the file name.
             filenames = [p.split("/", 1)[1] for p in custom_paths if "/" in p]
 
         if filenames:
@@ -668,12 +787,14 @@ class DawWorkspace(QWidget):
         self._refresh_custom_samples()
 
     def get_available_samples_flat(self) -> list[str]:
+        """Return every bundled sample as "category/name", or an empty list if the folder is missing or invalid."""
         try:
             return list_bundled_samples(self.samples_base_dir)
         except (OSError, SecurityError):
             return []
 
     def group_samples(self, relative_paths: list[str]) -> dict:
+        """Group "category/name" paths into {category: [names]}."""
         samples: dict[str, list[str]] = {}
         for relative_path in relative_paths:
             category, _, filename = relative_path.rpartition("/")
@@ -681,10 +802,12 @@ class DawWorkspace(QWidget):
         return samples
         
     def setup_ui(self):
+        """Build the transport bar (play, BPM, theme, tuning, length, save/load/export/import) and the scrolling track list."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(12)
         
+        # Play/stop button (gradient style, switched to red while playing) and the BPM slider 60..200.
         # ── TRANSPORT BAR — Row 1: Play + BPM ──
         transport_row1 = QHBoxLayout()
         transport_row1.setSpacing(12)
@@ -708,6 +831,7 @@ class DawWorkspace(QWidget):
         bpm_label = QLabel("BPM")
         bpm_label.setStyleSheet("color: #6a6a7a; font-weight: 600; font-size: 11px;")
         self.bpm_slider = QSlider(Qt.Orientation.Horizontal)
+        # Practical tempo range for the step sequencer; the engine itself may accept more.
         self.bpm_slider.setRange(60, 200)
         self.bpm_slider.setValue(self.bpm)
         self.bpm_slider.setMinimumWidth(120)
@@ -727,6 +851,7 @@ class DawWorkspace(QWidget):
 
         layout.addLayout(transport_row1)
 
+        # Theme accent, A4 tuning toggles (432/528 Hz), pattern length, and file actions.
         # ── TRANSPORT BAR — Row 2: Theme + Tuning + Save/Load/Export ──
         transport_row2 = QHBoxLayout()
         transport_row2.setSpacing(8)
@@ -779,6 +904,7 @@ class DawWorkspace(QWidget):
         transport_row2.addWidget(self.btn_tuning_432)
         transport_row2.addWidget(self.btn_tuning_528)
         
+        # Lengths are multiples of 16 steps (one bar of 16th notes each).
         # Steps length selector
         steps_label = QLabel("Length:")
         steps_label.setStyleSheet("color: #6a6a7a; font-weight: 600; font-size: 11px;")
@@ -809,6 +935,7 @@ class DawWorkspace(QWidget):
         sep.setStyleSheet("background-color: #1e1e2e;")
         layout.addWidget(sep)
 
+        # Scroll area so any number of tracks fits; tracks are stacked from the top.
         # ── TRACKS AREA ──
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -829,6 +956,7 @@ class DawWorkspace(QWidget):
         add_track_btn.clicked.connect(self.add_track)
         layout.addWidget(add_track_btn, 0, Qt.AlignmentFlag.AlignCenter)
         
+        # Startup: load the demo pattern 'House Beat' (seeded by init_db) so the user hears something at once; otherwise create four empty tracks.
         # Try to load 'Techno Banger' preset on startup by default so the user has a working beat immediately
         try:
             from app.storage.database import init_db, load_pattern
@@ -850,11 +978,13 @@ class DawWorkspace(QWidget):
             else:
                 for _ in range(4):
                     self.add_track()
+        # Any database or audio problem must not stop the DAW from opening.
         except Exception:
             for _ in range(4):
                 self.add_track()
             
     def add_track(self):
+        """Append an empty track using the current length and tuning and register it with the engine."""
         track = DawTrack(self.samples_dict, self.samples_base_dir, self.samples_flat)
         track.audio_engine = self.audio_engine
         track.tuning_offset_semitones = self.tuning_offset_semitones
@@ -885,6 +1015,7 @@ class DawWorkspace(QWidget):
             track.sample_combo.setCurrentText(filename)
 
     def remove_track(self, track):
+        """Remove a track from the list and the engine, then delete its widget (slot for delete_requested)."""
         if track in self.tracks:
             self.tracks.remove(track)
             self.tracks_layout.removeWidget(track)
@@ -893,6 +1024,7 @@ class DawWorkspace(QWidget):
             track.deleteLater()
 
     def clear_workspace(self):
+        """Stop playback, delete every track, reset BPM to 120 and start with one blank track ("New" button)."""
         if self.is_playing:
             self.toggle_playback()
 
@@ -917,6 +1049,7 @@ class DawWorkspace(QWidget):
         self.add_track()
 
     def update_sequence_length(self, text: str):
+        """Apply the chosen length ("16 steps" etc.) to the workspace and all tracks; unparsable text falls back to 16."""
         try:
             num_steps = int(text.split()[0])
         except (ValueError, IndexError):
@@ -926,6 +1059,7 @@ class DawWorkspace(QWidget):
             track.rebuild_step_buttons(num_steps)
 
     def on_tuning_432_toggled(self, checked: bool) -> None:
+        """Make the 432 Hz and 528 Hz buttons mutually exclusive; with neither pressed, return to 440 Hz."""
         if checked:
             self.btn_tuning_528.setChecked(False)
             self.apply_tuning(432.0)
@@ -933,6 +1067,7 @@ class DawWorkspace(QWidget):
             self.apply_tuning(STANDARD_TUNING_HZ)
 
     def on_tuning_528_toggled(self, checked: bool) -> None:
+        """Same as the 432 Hz handler, for 528 Hz."""
         if checked:
             self.btn_tuning_432.setChecked(False)
             self.apply_tuning(528.0)
@@ -940,12 +1075,20 @@ class DawWorkspace(QWidget):
             self.apply_tuning(STANDARD_TUNING_HZ)
 
     def apply_tuning(self, tuning_hz: float) -> None:
+        """Set the reference tuning and retune every track.
+
+        Args:
+            tuning_hz: desired frequency of A4.
+
+        The offset in semitones is 12 * log2(tuning / 440), e.g. 432 Hz gives about -0.318 semitones.
+        """
         self.tuning_hz = tuning_hz
         self.tuning_offset_semitones = 12 * math.log2(tuning_hz / STANDARD_TUNING_HZ)
         for track in self.tracks:
             track.set_tuning_offset(self.tuning_offset_semitones)
 
     def sync_tuning_buttons(self, tuning_hz: float) -> None:
+        """Update the two tuning buttons to match a loaded tuning, without triggering their handlers (signals blocked)."""
         self.btn_tuning_432.blockSignals(True)
         self.btn_tuning_528.blockSignals(True)
         self.btn_tuning_432.setChecked(tuning_hz == 432.0)
@@ -954,6 +1097,7 @@ class DawWorkspace(QWidget):
         self.btn_tuning_528.blockSignals(False)
 
     def save_pattern_dialog(self) -> None:
+        """Ask for a name and save BPM plus all tracks (legacy format) to the pattern database."""
         name, ok = QInputDialog.getText(self, "Save Pattern", "Pattern name:")
         name = name.strip()
         if not ok or not name:
@@ -964,6 +1108,7 @@ class DawWorkspace(QWidget):
             QMessageBox.warning(self, "Save Failed", str(exc))
 
     def load_pattern_dialog(self) -> None:
+        """Let the user choose a saved pattern and apply it: BPM, length (taken from the first track) and each track's state."""
         names = list_patterns()
         if not names:
             QMessageBox.information(self, "Load Pattern", "No saved patterns yet.")
@@ -980,6 +1125,7 @@ class DawWorkspace(QWidget):
         tracks_state = data["tracks"]
 
         # Set dynamic sequence length from loaded track steps size
+        # The pattern length is inferred from the first saved track.
         num_steps = len(tracks_state[0].get("steps", [])) if tracks_state else 16
         self.steps_combo.setCurrentText(f"{num_steps} steps")
         
@@ -989,6 +1135,7 @@ class DawWorkspace(QWidget):
             track.restore_state(state)
 
     def apply_theme(self, theme_name: str) -> None:
+        """Turn the theme choice into an accent colour and announce it with theme_changed ("Custom" opens a colour dialog)."""
         if theme_name == "Custom":
             color = QColorDialog.getColor(QColor("#007acc"), self, "Choose Accent Color")
             if not color.isValid():
@@ -1001,6 +1148,7 @@ class DawWorkspace(QWidget):
         self.theme_changed.emit(accent)
         
     def update_bpm(self, value):
+        """Slot for the BPM slider: store the value, update the label and tell the engine."""
         self.bpm = value
         self.bpm_display.setText(str(self.bpm))
         if self.is_playing:
@@ -1015,6 +1163,7 @@ class DawWorkspace(QWidget):
             self.audio_engine.bpm = value
 
     def toggle_playback(self):
+        """Start or stop playback and switch the Play button's look (purple "PLAY" vs red "STOP")."""
         if self.is_playing:
             self.play_btn.setText("▶  PLAY")
             self.play_btn.setStyleSheet("""
@@ -1028,6 +1177,7 @@ class DawWorkspace(QWidget):
                 }
             """)
             self.is_playing = False
+            # Stopping also clears every track's playhead highlight.
             self.audio_engine.stop()
             # Clear playhead
             for track in self.tracks:
@@ -1045,6 +1195,7 @@ class DawWorkspace(QWidget):
                 }
             """)
             self.is_playing = True
+            # Make sure the engine uses the slider's tempo before it starts.
             self.audio_engine.bpm = self.bpm
             self.audio_engine.start()
 
@@ -1061,6 +1212,7 @@ class DawWorkspace(QWidget):
         """
         if not self.num_steps:
             return
+        # The engine counts steps forever; wrap around the pattern length to loop.
         wrapped_index = step_index % self.num_steps
         for track in self.tracks:
             if track.track_processor is None:
@@ -1068,8 +1220,10 @@ class DawWorkspace(QWidget):
             if wrapped_index >= len(track.steps) or not track.steps[wrapped_index]:
                 continue
             chance = track.chance_pct
+            # Probabilistic trigger: a step fires only with the track's chance (percent).
             if chance < 100 and random.random() * 100 > chance:
                 continue
+            # The note's length comes from the track's gate length setting (percent of one step).
             self.audio_engine.trigger_step_note(
                 track.track_id, gate_length_pct=track.track_processor.state.gate_length_pct
             )
@@ -1084,6 +1238,7 @@ class DawWorkspace(QWidget):
             track.update_playhead(step_index)
 
     def get_state(self) -> dict:
+        """Return the whole DAW as a dict for the project file: bpm, theme, tuning, length and per-track data (category, sample, steps, chance, fx)."""
         state = {
             "bpm": self.bpm,
             "theme": self.theme_combo.currentText(),
@@ -1109,6 +1264,7 @@ class DawWorkspace(QWidget):
         return state
 
     def load_state(self, state: dict):
+        """Restore the DAW from get_state output; missing keys keep the current value."""
         if "bpm" in state:
             self.bpm_slider.setValue(state["bpm"])
         if "theme" in state:
@@ -1117,6 +1273,7 @@ class DawWorkspace(QWidget):
         num_steps = state.get("num_steps", 16)
         self.steps_combo.setCurrentText(f"{num_steps} steps")
             
+        # Replace all tracks with the saved ones (the engine registrations of the old tracks are removed first).
         if "tracks" in state:
             # Clear existing tracks
             for track in self.tracks:
@@ -1140,6 +1297,7 @@ class DawWorkspace(QWidget):
                 track.rebuild_step_buttons(self.num_steps)
                     
                 if "steps" in track_data:
+                    # Pad or truncate the saved steps to the current length.
                     steps_list = track_data["steps"]
                     track.steps = [bool(s) for s in steps_list[:self.num_steps]] + [False] * max(0, self.num_steps - len(steps_list))
                     for i, active in enumerate(track.steps):
@@ -1165,12 +1323,17 @@ class DawWorkspace(QWidget):
         self.apply_tuning(tuning_hz)
 
     def export_audio(self):
+        """Ask for a file name and bounce the pattern to a WAV (offline render, not a recording of playback).
+
+        Errors are reported in message boxes: SecurityError means a blocked path or limit, anything else an unexpected failure.
+        """
         from PySide6.QtWidgets import QFileDialog
         
         file_path, _ = QFileDialog.getSaveFileName(self, "Export Audio", os.path.expanduser("~"), "WAV Audio (*.wav)")
         if not file_path:
             return
 
+        # Each track becomes an ExportTrack with its sample, steps, FX flags and pitch (including the tuning offset).
         export_tracks = [
             ExportTrack(
                 relative_path=track.current_relative_path,
