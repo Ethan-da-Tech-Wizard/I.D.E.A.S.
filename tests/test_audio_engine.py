@@ -1,8 +1,12 @@
 # ==============================================================================
-# Program: test_audio_engine.py
+# Program: tests/test_audio_engine.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Master audio engine core coordinating real-time audio playback threads, mixer graph evaluation, voice summing, and ASIO/CoreAudio device interaction.
+# Purpose: tests app/services/audio/engine.py (AudioEngine) without opening an audio device. The
+# engine's real-time callback is invoked directly with numpy buffers, so the tests can step the
+# transport sample-accurately: step clock, BPM changes, gate-length note-offs, voice cap, choke
+# groups, CPU-overload shedding, master limiter and track removal/stop.
+# Run: python3 -m pytest tests/test_audio_engine.py -q     (needs numpy)
 # ==============================================================================
 
 from __future__ import annotations
@@ -14,20 +18,27 @@ from app.services.audio.engine import GLOBAL_VOICE_CAP, AudioEngine, ChokeGroupR
 from app.services.audio.track_engine import TrackProcessor, TrackState
 
 
+# Helper: a stereo sine buffer used as the sample every test track plays (2 s so voices outlast tests).
 def _tone_sample(seconds: float = 2.0, freq: float = 220.0) -> np.ndarray:
+    """Return a (frames, 2) float32 sine at `freq` Hz, amplitude 0.5."""
     n = int(SAMPLE_RATE * seconds)
     t = np.arange(n) / SAMPLE_RATE
     tone = (0.5 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
     return np.stack([tone, tone], axis=1)
 
 
+# Helper: drive the engine's audio callback `n_blocks` times with a reused output buffer, as the
+# sound card would. The last two arguments (time info, status) are unused by the engine.
 def _run_callback(engine: AudioEngine, n_blocks: int, block_size: int) -> None:
+    """Call engine._callback n_blocks times with block_size frames each."""
     out = np.zeros((block_size, 2), dtype=np.float32)
     for _ in range(n_blocks):
         engine._callback(out, block_size, None, None)
 
 
+# Helper: create a track with the tone sample, register it, and return it so tests can poke it.
 def _make_track(engine: AudioEngine, track_id: str, choke_group: int | None = None) -> TrackProcessor:
+    """Add a TrackProcessor named `track_id` (optionally in a choke group) to the engine."""
     state = TrackState()
     state.choke_group = choke_group
     track = TrackProcessor(track_id, state, _tone_sample())
@@ -37,9 +48,12 @@ def _make_track(engine: AudioEngine, track_id: str, choke_group: int | None = No
 
 # -- step clock --------------------------------------------------------
 
+# Scenario: run 25600 frames at 120 BPM and count on_step_boundary events. Step 0 fires right at
+# transport start, then one per step_frames; the list must be ascending (monotonic step counter).
 def test_step_boundary_fires_at_expected_sample_positions() -> None:
     engine = AudioEngine(block_size=64)
     engine.bpm = 120.0
+    # list.append is used directly as the callback, collecting the step numbers.
     fired = []
     engine.on_step_boundary = fired.append
     _run_callback(engine, n_blocks=400, block_size=64)  # 400*64 = 25600 samples
@@ -47,18 +61,23 @@ def test_step_boundary_fires_at_expected_sample_positions() -> None:
     # step 0 fires immediately at transport start (matches the legacy
     # AudioEngineThread's behavior of emitting step 0 right away), plus one
     # boundary per subsequent step_frames crossed.
+    # Integer division counts completed steps; +1 for the immediate step 0.
     expected = (400 * 64) // step_frames + 1
     assert len(fired) == expected
     assert fired == sorted(fired)
     assert fired[0] == 0
 
 
+# Design rule: a tempo change takes effect only at the next step boundary so a step never changes
+# length mid-way (that would drift the grid). Request 240 BPM mid-step, check 120 is still active,
+# then run past the boundary and check 240 is active.
 def test_bpm_change_is_quantized_not_applied_mid_step() -> None:
     engine = AudioEngine(block_size=64)
     engine.bpm = 120.0
     step_frames_before = engine._current_step_frames()
     out = np.zeros((64, 2), dtype=np.float32)
 
+    # Five 64-frame blocks put the clock mid-step, away from the step-0 boundary.
     # advance a few blocks first so we're mid-step (not sitting exactly on
     # the step-0 boundary, which fires immediately at transport start)
     for _ in range(5):
@@ -68,6 +87,7 @@ def test_bpm_change_is_quantized_not_applied_mid_step() -> None:
     engine._callback(out, 64, None, None)  # still well inside the current step
     assert engine.bpm == 120.0
 
+    # Enough blocks to cover one whole step at the old tempo, plus margin.
     # run until we cross the next step boundary
     for _ in range(step_frames_before // 64 + 5):
         engine._callback(out, 64, None, None)
@@ -76,6 +96,8 @@ def test_bpm_change_is_quantized_not_applied_mid_step() -> None:
 
 # -- note triggering / gate scheduling ----------------------------------
 
+# A sequencer note has a gate length (percent of one step). The engine must schedule the note-off
+# itself, so after gate_frames the voice releases and finishes without the caller doing anything.
 def test_trigger_step_note_schedules_a_note_off_at_gate_length() -> None:
     engine = AudioEngine(block_size=256)
     track = _make_track(engine, "t1")
@@ -84,6 +106,7 @@ def test_trigger_step_note_schedules_a_note_off_at_gate_length() -> None:
     assert voice is not None
     assert voice.amp_envelope.is_active
     step_frames = engine._current_step_frames()
+    # 50 percent of a step in frames; blocks are 256 frames, plus 10 blocks for the release tail.
     gate_frames = int(step_frames * 0.5)
     # run past the scheduled note-off point
     n_blocks = gate_frames // 256 + 10
@@ -91,6 +114,8 @@ def test_trigger_step_note_schedules_a_note_off_at_gate_length() -> None:
     assert voice.is_finished
 
 
+# Manual (keyboard/MIDI) notes have no gate: they must keep sounding until note_off_voice is called,
+# then finish. Two 50-block runs show it stays alive first, then ends after the explicit release.
 def test_note_on_without_gate_does_not_auto_release() -> None:
     engine = AudioEngine(block_size=256)
     _make_track(engine, "t1")
@@ -102,12 +127,17 @@ def test_note_on_without_gate_does_not_auto_release() -> None:
     assert voice.is_finished
 
 
+# Triggers for a missing track id return None instead of raising; the UI may fire late events for
+# tracks that were just deleted.
 def test_trigger_on_unknown_track_returns_none() -> None:
     engine = AudioEngine(block_size=256)
     assert engine.trigger_step_note("nonexistent", gate_length_pct=100.0) is None
     assert engine.note_on("nonexistent") is None
 
 
+# Polyphony ceiling: when the engine-wide voice count is at GLOBAL_VOICE_CAP, new notes are refused
+# (None), which bounds CPU use. Voices are added straight on the track to bypass its own smaller
+# per-track limit, so only the global cap is exercised.
 def test_global_voice_cap_refuses_new_triggers_once_full() -> None:
     engine = AudioEngine(block_size=256)
     track = _make_track(engine, "t1")
@@ -119,15 +149,19 @@ def test_global_voice_cap_refuses_new_triggers_once_full() -> None:
 
 # -- choke groups --------------------------------------------------------
 
+# Hi-hat behaviour: tracks sharing a choke group cut each other off. Triggering the closed hat must
+# release the open hat's voice (RELEASE or already IDLE) but leave its own new voice in ATTACK.
 def test_choke_group_registry_chokes_other_tracks_only() -> None:
     registry = ChokeGroupRegistry()
     t1 = TrackProcessor("hat_closed", TrackState(choke_group=1), _tone_sample())
     t2 = TrackProcessor("hat_open", TrackState(choke_group=1), _tone_sample())
+    # The TrackState already carries the group; setting the attribute as well mirrors how the registry reads it.
     t1.choke_group = 1
     t2.choke_group = 1
     registry.register(t1)
     registry.register(t2)
 
+    # Order matters: the open hat is already sounding when the closed hat triggers.
     v2 = t2.trigger_note()
     v1 = t1.trigger_note()
     registry.notify_trigger(t1)
@@ -136,6 +170,7 @@ def test_choke_group_registry_chokes_other_tracks_only() -> None:
     assert v1.amp_envelope.stage.name == "ATTACK"  # the triggering track's own voice is untouched
 
 
+# A track with no choke group must keep playing when a grouped track triggers.
 def test_choke_group_does_not_affect_tracks_outside_the_group() -> None:
     engine = AudioEngine(block_size=256)
     t1 = _make_track(engine, "t1", choke_group=1)
@@ -147,8 +182,13 @@ def test_choke_group_does_not_affect_tracks_outside_the_group() -> None:
 
 # -- overload shedding ----------------------------------------------------
 
+# Graceful degradation: if rendering takes more than 70 percent of the block period on two
+# consecutive blocks, the engine sheds load (bypasses expensive effects) and reports it through
+# on_overload_changed; after about one second of headroom it restores them. Times are injected
+# into _update_overload_state so the test is deterministic and does not depend on a slow machine.
 def test_overload_shedding_engages_and_recovers_under_synthetic_load() -> None:
     engine = AudioEngine(block_size=256)
+    # Eight busy tracks make shedding meaningful; the huge gate length keeps their notes sounding.
     for i in range(8):
         _make_track(engine, f"t{i}")
         engine.trigger_step_note(f"t{i}", gate_length_pct=999.0)
@@ -159,12 +199,14 @@ def test_overload_shedding_engages_and_recovers_under_synthetic_load() -> None:
     # force overload detection without needing real wall-clock slow blocks:
     # feed the internal state machine directly, matching the documented
     # "70% of block period on 2 consecutive blocks" rule.
+    # Seconds available to render one block: frames / sample rate.
     block_period = 256 / engine.sample_rate
     engine._update_overload_state(block_period * 0.9, block_period, 256)
     engine._update_overload_state(block_period * 0.9, block_period, 256)
     assert engine._shed_count == 1
     assert overload_changes == [True]
 
+    # Roughly one second's worth of blocks at 10 percent load is the recovery window.
     # long stretch of headroom should let it recover
     for _ in range(int(engine.sample_rate / 256) + 2):
         engine._update_overload_state(block_period * 0.1, block_period, 256)
@@ -172,6 +214,8 @@ def test_overload_shedding_engages_and_recovers_under_synthetic_load() -> None:
     assert overload_changes == [True, False]
 
 
+# Shedding strategy: the first shed level bypasses the compressor on the quietest track, where the
+# loss is least audible. Peak levels are set by hand: the quiet track must be chosen, no reverb yet.
 def test_shed_targets_prioritize_lowest_peak_tracks() -> None:
     engine = AudioEngine(block_size=256)
     quiet = _make_track(engine, "quiet")
@@ -187,11 +231,14 @@ def test_shed_targets_prioritize_lowest_peak_tracks() -> None:
 
 # -- master bus / limiter ----------------------------------------------
 
+# End-to-end safety: eight tracks pushed +6 dB (a deliberately hot mix) must still never exceed the
+# master limiter's ceiling over 20 blocks.
 def test_master_output_never_exceeds_limiter_ceiling() -> None:
     engine = AudioEngine(block_size=512)
     for i in range(8):
         state = TrackState()
         state.mixer.fader_db = 6.0
+        # Distortion off so only gain staging, summing and the limiter are measured.
         state.distortion_drive = 0.0
         track = TrackProcessor(f"t{i}", state, _tone_sample())
         engine.add_track(track)
@@ -205,6 +252,7 @@ def test_master_output_never_exceeds_limiter_ceiling() -> None:
     assert max_abs <= engine._limiter.ceiling_linear + 1e-6
 
 
+# After remove_track, even a sounding voice must contribute nothing: the output buffer stays all zero.
 def test_remove_track_stops_it_contributing_to_master() -> None:
     engine = AudioEngine(block_size=256)
     track = _make_track(engine, "t1")
@@ -215,6 +263,7 @@ def test_remove_track_stops_it_contributing_to_master() -> None:
     assert np.max(np.abs(out)) == 0.0
 
 
+# stop() must release every voice and clear scheduled note-offs, so nothing fires after the transport stops.
 def test_stop_chokes_all_voices_immediately() -> None:
     engine = AudioEngine(block_size=256)
     track = _make_track(engine, "t1")

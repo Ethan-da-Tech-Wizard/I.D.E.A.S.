@@ -1,8 +1,11 @@
 # ==============================================================================
-# Program: test_audio_voice.py
+# Program: tests/test_audio_voice.py
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
-# Purpose: Implements polyphonic virtual synthesizer voice allocation, ADSR envelope generation, oscillator wave tables, and filter modulation.
+# Purpose: tests app/services/audio/voice.py, one playing instance of a sample: amplitude envelope,
+# trim/loop handling, pitch (semitones and LFO), voice stealing and the optional per-voice filter.
+# Voices render into caller-provided numpy buffers in blocks, exactly as the engine calls them.
+# Run: python3 -m pytest tests/test_audio_voice.py -q     (needs numpy)
 # ==============================================================================
 
 from __future__ import annotations
@@ -19,27 +22,34 @@ from app.services.audio.voice import (
 )
 
 
+# Helper: 0.3 s stereo 220 Hz sine, half amplitude.
 def _tone_sample(seconds: float = 0.3, freq: float = 220.0) -> np.ndarray:
+    """Return a (frames, 2) float32 sine buffer."""
     n = int(SAMPLE_RATE * seconds)
     t = np.arange(n) / SAMPLE_RATE
     tone = (0.5 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
     return np.stack([tone, tone], axis=1)
 
 
+# Helper: renders in block_size chunks. The real engine never asks a voice for more frames than its
+# block size, and the voice's scratch buffers are sized for that, so tests must not do one huge call.
 def _render_in_blocks(voice: Voice, total_frames: int, block_size: int = 512) -> np.ndarray:
     """Simulates real callback usage -- render() is only ever called with
     n_frames <= the engine's configured block size, never one giant call."""
     out = np.zeros((total_frames, 2), dtype=np.float32)
     pos = 0
+    # One reusable block buffer, like the engine's.
     scratch = np.zeros((block_size, 2), dtype=np.float32)
     while pos < total_frames:
         n = min(block_size, total_frames - pos)
+        # render fills `scratch` with the first n frames; the tail of the last block may be shorter.
         voice.render(n, scratch)
         out[pos:pos + n] = scratch[:n]
         pos += n
     return out
 
 
+# A new voice is idle until note_on, which activates the envelope.
 def test_voice_note_on_starts_amp_envelope() -> None:
     sample = _tone_sample()
     voice = Voice(sample, VoiceParams())
@@ -49,6 +59,8 @@ def test_voice_note_on_starts_amp_envelope() -> None:
     assert not voice.is_finished
 
 
+# note_off with a 5 ms release: after 50 ms of rendering the voice must be finished (is_finished
+# lets the track recycle it).
 def test_voice_finishes_after_release_completes() -> None:
     sample = _tone_sample(seconds=1.0)
     params = VoiceParams(amp_attack_ms=0.0, amp_decay_ms=0.0, amp_sustain_pct=100.0, amp_release_ms=5.0)
@@ -60,6 +72,8 @@ def test_voice_finishes_after_release_completes() -> None:
     assert voice.is_finished
 
 
+# Stealing must use the short STEAL_FADE_MS fade, not the 2000 ms musical release; rendering twice
+# the fade length is therefore enough to finish.
 def test_voice_steal_uses_fast_fade_regardless_of_release_setting() -> None:
     sample = _tone_sample(seconds=1.0)
     params = VoiceParams(amp_release_ms=2000.0)  # long musical release
@@ -72,6 +86,8 @@ def test_voice_steal_uses_fast_fade_regardless_of_release_setting() -> None:
     assert voice.is_finished
 
 
+# One-shot behaviour: when a non-looped sample runs out of content the voice releases itself, so a
+# short drum hit does not hold a voice forever. 0.2 s is much longer than the 0.05 s sample.
 def test_voice_non_looped_sample_triggers_note_off_at_trim_end() -> None:
     """docs/DAW_VISION_SPEC.md: release starts at note-off *or* at the end
     of trimmed content for a non-looped sample, whichever comes first."""
@@ -83,6 +99,8 @@ def test_voice_non_looped_sample_triggers_note_off_at_trim_end() -> None:
     assert voice.is_finished  # must have auto-released once content ran out
 
 
+# Looped sample (region 20 to 80 percent): the voice must keep sounding past the sample length, and
+# produce non-silent output while the note is held.
 def test_voice_loop_sustains_past_trim_end_while_held() -> None:
     sample = _tone_sample(seconds=0.05)
     params = VoiceParams(
@@ -98,6 +116,8 @@ def test_voice_loop_sustains_past_trim_end_while_held() -> None:
     assert np.max(np.abs(out)) > 0.0
 
 
+# 12 semitones is one octave, so playback speed doubles: after 1000 output frames the read
+# position must be roughly 2000 (the test uses > 1900 to allow interpolation rounding).
 def test_voice_pitch_up_reads_source_faster() -> None:
     sample = _tone_sample(seconds=0.5)
     params_up = VoiceParams(base_semitones=12.0)  # one octave up -> 2x playback rate
@@ -108,6 +128,8 @@ def test_voice_pitch_up_reads_source_faster() -> None:
     assert voice_up._position > 1900  # roughly double the frame count consumed
 
 
+# Routing check: a square LFO aimed at pitch must render without NaN/inf. The LFO's depth is a
+# modulation amount, so only numerical sanity is asserted.
 def test_voice_lfo_targeting_pitch_modulates_playback_rate() -> None:
     sample = _tone_sample(seconds=0.5)
     params = VoiceParams(
@@ -121,6 +143,7 @@ def test_voice_lfo_targeting_pitch_modulates_playback_rate() -> None:
     assert np.all(np.isfinite(out))
 
 
+# filter_enabled creates a private filter (filters hold state, so they cannot be shared between voices).
 def test_voice_filter_enabled_creates_per_voice_filter_instance() -> None:
     sample = _tone_sample()
     params = VoiceParams(filter_enabled=True, filter_type=FilterType.LOWPASS,
@@ -133,6 +156,7 @@ def test_voice_filter_enabled_creates_per_voice_filter_instance() -> None:
     assert np.all(np.isfinite(out))
 
 
+# No filter object is created when disabled, saving CPU per voice.
 def test_voice_without_filter_enabled_has_no_filter_instance() -> None:
     sample = _tone_sample()
     voice = Voice(sample, VoiceParams(filter_enabled=False))
