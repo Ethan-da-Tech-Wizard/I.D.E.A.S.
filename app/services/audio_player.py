@@ -4,8 +4,9 @@
 # Last Modified: November 18, 2026
 # Purpose: Controls low-latency audio stream playback, buffer scheduling, transport controls (play, pause, seek, loop), and audio hardware output device routing.
 # ==============================================================================
-# How this module fits: app/ui/daw.py creates one SamplePlayer per track and calls set_source/play/stop from the sequencer timer when a step fires.
-# It plays by launching the operating system's command-line player as a child process, so the app needs no audio library for this path
+# How this module fits: this is the LEGACY player. app/ui/daw.py no longer imports it (a comment there says the live AudioEngine replaced the old
+# paplay-subprocess SamplePlayer) and nothing else in app/ does, so treat it as a fallback kept for reference. In its original design one SamplePlayer per track
+# was driven from the sequencer timer when a step fired. It plays by launching the operating system's command-line player as a child process, so the app needs no audio library for this path
 # (the other path, app/services/audio/engine.py, does real-time mixing instead).
 # Inputs: a WAV path. Output: sound via paplay (PulseAudio/PipeWire), aplay (ALSA) or afplay (macOS), chosen once at import time.
 # Design decisions: a new short process per trigger is crude but avoids the dropouts seen with Qt multimedia when retriggering fast;

@@ -4,9 +4,10 @@
 # Last Modified: November 18, 2026
 # Purpose: Implements digital signal processing audio effect chains including equalizers, compressors, reverbs, delays, and distortion filters for track and master inserts.
 # ==============================================================================
-# How this module fits: the DAW (app/ui/daw.py) calls get_or_render_fx() when a track has effects switched on. The result is a plain WAV path
-# that the sample player (app/services/audio_player.py) plays like any other sample. No live audio graph exists, so each (sample, effects) pair is
-# rendered once to the app-data folder and reused. tests/test_audio_fx.py covers the maths.
+# How this module fits: this is the OFFLINE effects path. Nothing in app/ calls it any more (daw.py comments say its live path replaced the
+# get_or_render_fx() version, which runs the same effects in real time through app/services/audio/dsp.py); it is kept, with tests/test_audio_fx.py, as a
+# dependency-light reference and is mentioned by app/widgets/fx_rack.py. When used, get_or_render_fx() returns a plain WAV path: each (sample, effects)
+# pair is rendered once to the app-data folder and reused. tests/test_audio_fx.py covers the maths.
 # Signal model: audio is a list of floats in [-1.0, 1.0], mono, at the file's own sample rate. Fixed chain order: pitch shift -> distortion -> delay -> reverb.
 # Inputs: a bundled sample path (validated by security.resolve_sample_path) and boolean flags. Outputs: a cached 16-bit mono WAV.
 # Design decisions: pure Python on lists (no numpy) because the project keeps its dependencies small and offline-reviewable; samples are capped at
