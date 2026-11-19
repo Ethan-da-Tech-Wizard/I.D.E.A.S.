@@ -27,14 +27,17 @@ class SecurityError(ValueError):
 
 
 def read_text_file_safely(path: str, max_bytes: int = MAX_OPEN_FILE_BYTES) -> str:
+    # Resolve realpath strictly to prevent symlink traversal attacks escaping intended directories
     file_path = Path(path).expanduser().resolve(strict=True)
     if not file_path.is_file():
         raise SecurityError("Only regular files can be opened.")
 
+    # Guard against memory exhaustion by enforcing explicit file size threshold (2 MiB limit)
     size = file_path.stat().st_size
     if size > max_bytes:
         raise SecurityError(f"File is too large to open safely ({size} bytes).")
 
+    # Read binary bytes and check for null bytes to mitigate C-string truncation attacks
     data = file_path.read_bytes()
     if b"\x00" in data:
         raise SecurityError("Binary files cannot be opened in the editor.")
